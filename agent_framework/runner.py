@@ -6,6 +6,7 @@ import importlib.util
 import logging
 import os
 import tempfile
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from pydantic_ai import Agent
@@ -185,6 +186,92 @@ class AgentRunner:
             if id(m) not in original_ids and _key(m) not in original_keys
         ]
 
+    def _build_hooks(
+        self,
+        session_id: str,
+        pending: list | None = None,
+        streamers: list | None = None,
+    ) -> Hooks:
+        """Build Pydantic AI hooks for tool execution.
+
+        When ``streamers`` is provided, each tool/stream event is also forwarded
+        to streaming extensions via ``on_agent_runner_event_stream``; yielded
+        chunks are appended to ``pending``.
+        """
+        pending = pending if pending is not None else []
+        streamers = streamers if streamers is not None else []
+        hooks = Hooks()
+        tool_calls = 0
+        max_tool_calls = self._settings.max_tool_calls_per_turn
+
+        async def _notify_streamers(event: str, data: dict) -> None:
+            for s in streamers:
+                try:
+                    async for chunk in s.on_agent_runner_event_stream(event, data):
+                        pending.append(chunk)
+                except Exception as exc:  # pragma: no cover - fail-open
+                    logging.getLogger(__name__).warning(
+                        "Streaming extension %s failed: %s",
+                        type(s).__name__, exc,
+                        exc_info=True,
+                    )
+
+        @hooks.on.before_tool_execute
+        async def _on_tool_start(ctx, *, call, tool_def, args):
+            payload = {
+                "session_id": session_id,
+                "event": "on_tool_start",
+                "name": call.tool_name,
+                "data": {"args": args},
+            }
+            await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
+            await _notify_streamers(AgentRunnerEvent.AGENT_RUN, payload)
+            return args
+
+        @hooks.on.tool_execute
+        async def _on_tool_call(ctx, *, call, tool_def, args, handler):
+            nonlocal tool_calls
+            tool_calls += 1
+            if tool_calls > max_tool_calls:
+                return f"Tool call limit ({max_tool_calls}) reached for this turn."
+
+            call_data = {
+                "session_id": session_id,
+                "tool_name": call.tool_name,
+                "tool_call_id": call.tool_call_id,
+                "args": dict(args),
+            }
+            call_result = await self._fire(AgentRunnerEvent.TOOL_CALL, call_data)
+            if call_result.get("block"):
+                reason = call_result.get("reason", "Blocked by extension")
+                return f"Tool call blocked: {reason}"
+            if "args" in call_result:
+                args = call_result["args"]
+            return await handler(args)
+
+        @hooks.on.after_tool_execute
+        async def _on_tool_result(ctx, *, call, tool_def, args, result):
+            result_data = {
+                "session_id": session_id,
+                "tool_name": call.tool_name,
+                "tool_call_id": call.tool_call_id,
+                "content": result,
+                "is_error": False,
+            }
+            result_data = await self._fire(AgentRunnerEvent.TOOL_RESULT, result_data)
+            content = result_data.get("content", result)
+            payload = {
+                "session_id": session_id,
+                "event": "on_tool_end",
+                "name": call.tool_name,
+                "data": {"result": content},
+            }
+            await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
+            await _notify_streamers(AgentRunnerEvent.AGENT_RUN, payload)
+            return content
+
+        return hooks
+
     def _build_capabilities(self) -> list:
         capabilities = list(self._config.capabilities)
         if self._config.hooks is not None:
@@ -341,65 +428,7 @@ class AgentRunner:
 
         # Framework hooks forward tool execution events to AGENT_RUN subscribers
         # and enforce per-turn tool call limits.
-        hooks = Hooks()
-        tool_calls = 0
-        max_tool_calls = self._settings.max_tool_calls_per_turn
-
-        @hooks.on.before_tool_execute
-        async def _on_tool_start(ctx, *, call, tool_def, args):
-            await self._fire(
-                AgentRunnerEvent.AGENT_RUN,
-                {
-                    "session_id": session_id,
-                    "event": "on_tool_start",
-                    "name": call.tool_name,
-                    "data": {"args": args},
-                },
-            )
-            return args
-
-        @hooks.on.tool_execute
-        async def _on_tool_call(ctx, *, call, tool_def, args, handler):
-            nonlocal tool_calls
-            tool_calls += 1
-            if tool_calls > max_tool_calls:
-                return f"Tool call limit ({max_tool_calls}) reached for this turn."
-
-            call_data = {
-                "session_id": session_id,
-                "tool_name": call.tool_name,
-                "tool_call_id": call.tool_call_id,
-                "args": dict(args),
-            }
-            call_result = await self._fire(AgentRunnerEvent.TOOL_CALL, call_data)
-            if call_result.get("block"):
-                reason = call_result.get("reason", "Blocked by extension")
-                return f"Tool call blocked: {reason}"
-            if "args" in call_result:
-                args = call_result["args"]
-            return await handler(args)
-
-        @hooks.on.after_tool_execute
-        async def _on_tool_result(ctx, *, call, tool_def, args, result):
-            result_data = {
-                "session_id": session_id,
-                "tool_name": call.tool_name,
-                "tool_call_id": call.tool_call_id,
-                "content": result,
-                "is_error": False,
-            }
-            result_data = await self._fire(AgentRunnerEvent.TOOL_RESULT, result_data)
-            content = result_data.get("content", result)
-            await self._fire(
-                AgentRunnerEvent.AGENT_RUN,
-                {
-                    "session_id": session_id,
-                    "event": "on_tool_end",
-                    "name": call.tool_name,
-                    "data": {"result": content},
-                },
-            )
-            return content
+        hooks = self._build_hooks(session_id)
 
         capabilities = self._build_capabilities() or []
         if hooks not in capabilities:
@@ -464,3 +493,167 @@ class AgentRunner:
             output=output, session_id=session_id,
             new_messages=delta_messages, usage=usage,
         )
+
+    async def run_stream(
+        self, prompt: str, *, session_id: str | None = None
+    ) -> AsyncIterator[dict]:
+        """Run the agent and yield events from streaming extensions.
+
+        Non-streaming extensions continue to receive events through
+        ``on_agent_runner_event`` exactly as in ``run()``.  The final event
+        is always ``{"type": "run_end", ...}``.
+        """
+        if session_id is None:
+            session_id = await self._session_manager.create_session()
+
+        await self._fire(AgentRunnerEvent.SESSION_START, {"session_id": session_id})
+
+        if self._context_manager is None:
+            raise RuntimeError("ContextManager is not configured")
+
+        history = await self._session_manager.load_history(session_id)
+        original_history = list(history)
+
+        # CONTEXT_PREPARE — ContextManager first, then extensions
+        needs_compaction = False
+        try:
+            prepared = await self._context_manager.prepare(
+                history,
+                system_prompt=self._config.instructions,
+                current_state=BaselineState(),
+            )
+            history = prepared.messages
+            needs_compaction = prepared.needs_compaction
+        except Exception as exc:  # pragma: no cover - fail-open
+            logging.getLogger(__name__).warning(
+                "ContextManager prepare failed: %s", exc, exc_info=True
+            )
+
+        ctx_data = {
+            "session_id": session_id,
+            "messages": history,
+            "needs_compaction": needs_compaction,
+        }
+        ctx_result = await self._fire(AgentRunnerEvent.CONTEXT_PREPARE, ctx_data)
+        history = ctx_result.get("messages", history)
+        needs_compaction = ctx_result.get("needs_compaction", needs_compaction)
+
+        # BEFORE_AGENT_RUN — extensions can modify messages, not system_prompt
+        before_data = {"session_id": session_id, "messages": history}
+        before_result = await self._fire(AgentRunnerEvent.BEFORE_AGENT_RUN, before_data)
+        if "messages" in before_result:
+            history = before_result["messages"]
+
+        # AGENT_RUN
+        await self._fire(
+            AgentRunnerEvent.AGENT_RUN,
+            {"session_id": session_id, "prompt": prompt, "messages": history},
+        )
+
+        # Streaming extensions receive the same events as old extensions.
+        # The Protocol default implementation is an empty async generator, so
+        # old extensions are harmless even when included here.
+        streamers = list(self._extensions)
+        pending: list[dict] = []
+
+        async def _notify_streamers(event: str, data: dict) -> None:
+            for s in streamers:
+                try:
+                    async for chunk in s.on_agent_runner_event_stream(event, data):
+                        pending.append(chunk)
+                except Exception as exc:  # pragma: no cover - fail-open
+                    logging.getLogger(__name__).warning(
+                        "Streaming extension %s failed: %s",
+                        type(s).__name__, exc,
+                        exc_info=True,
+                    )
+
+        hooks = self._build_hooks(session_id, pending=pending, streamers=streamers)
+
+        capabilities = self._build_capabilities() or []
+        if hooks not in capabilities:
+            capabilities.append(hooks)
+
+        model_settings = ModelSettings(
+            parallel_tool_calls=self._settings.parallel_tool_calls,
+        )
+
+        agent = Agent(
+            model=self._build_model(),
+            instructions=self._config.instructions,
+            tools=await self._get_tools(),
+            capabilities=capabilities or None,
+            model_settings=model_settings,
+        )
+
+        output_parts: list[str] = []
+        async with agent.run_stream(prompt, message_history=history) as result:
+            async for text in result.stream_text(delta=False):
+                output_parts.append(text)
+                payload = {
+                    "session_id": session_id,
+                    "event": "on_chat_model_stream",
+                    "data": {"chunk": text},
+                }
+                await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
+                await _notify_streamers(AgentRunnerEvent.AGENT_RUN, payload)
+                while pending:
+                    yield pending.pop(0)
+
+        output = "".join(output_parts)
+        delta_messages = self._messages_to_persist(original_history, result.all_messages())
+        usage = result.usage
+
+        await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, {
+            "session_id": session_id, "output": output, "usage": usage,
+        })
+        await _notify_streamers(AgentRunnerEvent.AFTER_AGENT_RUN, {
+            "session_id": session_id, "output": output, "usage": usage,
+        })
+        while pending:
+            yield pending.pop(0)
+
+        # SESSION_SAVE
+        await self._session_manager.save_messages(session_id, delta_messages)
+        await self._fire(AgentRunnerEvent.SESSION_SAVE, {
+            "session_id": session_id,
+            "delta_messages": delta_messages,
+        })
+        await _notify_streamers(AgentRunnerEvent.SESSION_SAVE, {
+            "session_id": session_id,
+            "delta_messages": delta_messages,
+        })
+        while pending:
+            yield pending.pop(0)
+
+        # COMPACTION_TRIGGER — extensions can cancel
+        if needs_compaction:
+            comp_result = await self._fire_notify(AgentRunnerEvent.COMPACTION_TRIGGER, {
+                "session_id": session_id,
+            })
+            cancelled = comp_result.get("cancel", False)
+            if not cancelled:
+                asyncio.create_task(self._trigger_compaction(session_id))
+            await self._fire(
+                AgentRunnerEvent.COMPACTION_APPLIED,
+                {"session_id": session_id, "cancelled": bool(cancelled)},
+            )
+            await _notify_streamers(
+                AgentRunnerEvent.COMPACTION_APPLIED,
+                {"session_id": session_id, "cancelled": bool(cancelled)},
+            )
+            while pending:
+                yield pending.pop(0)
+
+        await self._fire(AgentRunnerEvent.SESSION_END, {"session_id": session_id})
+        await _notify_streamers(AgentRunnerEvent.SESSION_END, {"session_id": session_id})
+        while pending:
+            yield pending.pop(0)
+
+        yield {
+            "type": "run_end",
+            "session_id": session_id,
+            "output": output,
+            "new_messages": delta_messages,
+            "usage": usage,
+        }

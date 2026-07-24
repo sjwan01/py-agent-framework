@@ -5,7 +5,7 @@ Zero implementation. Pure interface definitions.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Awaitable
+from collections.abc import AsyncIterator, Callable, Awaitable
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -29,6 +29,16 @@ class Extension(Protocol):
     async def register_tool_sources(self) -> list[Any]: ...
     async def on_tool_event(self, event: str, data: dict) -> dict | None: ...
     async def on_agent_runner_event(self, event: str, data: dict) -> dict | None: ...
+    async def on_agent_runner_event_stream(
+        self, event: str, data: dict
+    ) -> AsyncIterator[dict]:
+        """Optional async generator for streaming extensions.
+
+        If the extension does not override this, ``run()`` and ``run_stream()``
+        ignore it.
+        """
+        if False:  # pragma: no cover
+            yield {}
 
 
 # ── ToolSource ─────────────────────────────────────────────────────────
