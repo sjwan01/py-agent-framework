@@ -139,6 +139,14 @@ class AgentRunner:
         return self._raw_tools
 
     def _build_model(self):
+        """Return the model override or build an OpenAI-compatible model from settings.
+
+        Pydantic AI's ``Agent`` can accept a model name string and resolve it
+        automatically, but that path does not support a custom ``base_url`` or
+        ``api_key`` without a pre-configured provider.  V2 keeps explicit
+        provider construction so deployments with local/vLLM endpoints work out
+        of the box.
+        """
         if self._model is not None:
             return self._model
         return OpenAIChatModel(
@@ -153,11 +161,13 @@ class AgentRunner:
     def _messages_to_persist(original_history: list, all_messages: list) -> list:
         """Return messages that should be persisted for this turn.
 
-        ``result.new_messages()`` cannot be used here because extensions may
-        inject messages into ``message_history`` before the agent runs, and
-        the SDK treats those injected messages as existing history and omits
-        them from ``new_messages()``.  We therefore diff ``all_messages()``
-        against the originally loaded history.
+        Pydantic AI's ``result.new_messages()`` intentionally excludes any
+        message passed in ``message_history``.  V2 extensions may inject
+        messages into ``message_history`` during ``CONTEXT_PREPARE`` or
+        ``BEFORE_AGENT_RUN``; those messages must survive across turns, so
+        they must be persisted.  There is no SDK primitive that exposes
+        "messages added by the caller to message_history", so we compute the
+        delta manually against the originally loaded history.
         """
         original_ids = {id(m) for m in original_history}
 
@@ -186,6 +196,28 @@ class AgentRunner:
             if id(m) not in original_ids and _key(m) not in original_keys
         ]
 
+    @staticmethod
+    async def _notify_streamers(
+        streamers: list, event: str, data: dict, pending: list
+    ) -> None:
+        """Forward an event to streaming extensions and collect yielded chunks."""
+        for s in streamers:
+            try:
+                async for chunk in s.on_agent_runner_event_stream(event, data):
+                    pending.append(chunk)
+            except Exception as exc:  # pragma: no cover - fail-open
+                logging.getLogger(__name__).warning(
+                    "Streaming extension %s failed: %s",
+                    type(s).__name__, exc,
+                    exc_info=True,
+                )
+
+    @staticmethod
+    async def _drain_pending(pending: list) -> AsyncIterator[dict]:
+        """Yield all chunks currently in ``pending`` and clear it."""
+        while pending:
+            yield pending.pop(0)
+
     def _build_hooks(
         self,
         session_id: str,
@@ -204,18 +236,6 @@ class AgentRunner:
         tool_calls = 0
         max_tool_calls = self._settings.max_tool_calls_per_turn
 
-        async def _notify_streamers(event: str, data: dict) -> None:
-            for s in streamers:
-                try:
-                    async for chunk in s.on_agent_runner_event_stream(event, data):
-                        pending.append(chunk)
-                except Exception as exc:  # pragma: no cover - fail-open
-                    logging.getLogger(__name__).warning(
-                        "Streaming extension %s failed: %s",
-                        type(s).__name__, exc,
-                        exc_info=True,
-                    )
-
         @hooks.on.before_tool_execute
         async def _on_tool_start(ctx, *, call, tool_def, args):
             payload = {
@@ -225,7 +245,7 @@ class AgentRunner:
                 "data": {"args": args},
             }
             await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
-            await _notify_streamers(AgentRunnerEvent.AGENT_RUN, payload)
+            await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_RUN, payload, pending)
             return args
 
         @hooks.on.tool_execute
@@ -267,7 +287,7 @@ class AgentRunner:
                 "data": {"result": content},
             }
             await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
-            await _notify_streamers(AgentRunnerEvent.AGENT_RUN, payload)
+            await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_RUN, payload, pending)
             return content
 
         return hooks
@@ -381,16 +401,24 @@ class AgentRunner:
                                     pass
         return extensions
 
-    async def run(self, prompt: str, *, session_id: str | None = None) -> RunResult:
+    async def _setup_run(
+        self, prompt: str, session_id: str | None
+    ) -> tuple[str, list, list, bool]:
+        """Shared pre-agent setup used by ``run()`` and ``run_stream()``.
+
+        Returns ``(session_id, history, original_history, needs_compaction)``.
+        """
         if session_id is None:
             session_id = await self._session_manager.create_session()
 
         await self._fire(AgentRunnerEvent.SESSION_START, {"session_id": session_id})
 
+        if self._context_manager is None:
+            raise RuntimeError("ContextManager is not configured")
+
         history = await self._session_manager.load_history(session_id)
         original_history = list(history)
 
-        # CONTEXT_PREPARE — ContextManager first, then extensions
         needs_compaction = False
         try:
             prepared = await self._context_manager.prepare(
@@ -414,21 +442,28 @@ class AgentRunner:
         history = ctx_result.get("messages", history)
         needs_compaction = ctx_result.get("needs_compaction", needs_compaction)
 
-        # BEFORE_AGENT_RUN — extensions can modify messages, not system_prompt
         before_data = {"session_id": session_id, "messages": history}
         before_result = await self._fire(AgentRunnerEvent.BEFORE_AGENT_RUN, before_data)
         if "messages" in before_result:
             history = before_result["messages"]
 
-        # AGENT_RUN
         await self._fire(
             AgentRunnerEvent.AGENT_RUN,
             {"session_id": session_id, "prompt": prompt, "messages": history},
         )
 
-        # Framework hooks forward tool execution events to AGENT_RUN subscribers
-        # and enforce per-turn tool call limits.
-        hooks = self._build_hooks(session_id)
+        return session_id, history, original_history, needs_compaction
+
+    async def _build_agent(
+        self,
+        history: list,
+        session_id: str,
+        *,
+        pending: list | None = None,
+        streamers: list | None = None,
+    ) -> Agent:
+        """Build the Pydantic AI Agent for this turn."""
+        hooks = self._build_hooks(session_id, pending=pending, streamers=streamers)
 
         capabilities = self._build_capabilities() or []
         if hooks not in capabilities:
@@ -438,13 +473,81 @@ class AgentRunner:
             parallel_tool_calls=self._settings.parallel_tool_calls,
         )
 
-        agent = Agent(
+        return Agent(
             model=self._build_model(),
             instructions=self._config.instructions,
             tools=await self._get_tools(),
             capabilities=capabilities or None,
             model_settings=model_settings,
         )
+
+    async def _finalize_run(
+        self,
+        session_id: str,
+        original_history: list,
+        result,
+        output: str,
+        needs_compaction: bool,
+        *,
+        streamers: list | None = None,
+        pending: list | None = None,
+    ) -> AsyncIterator[dict]:
+        """Shared post-agent finalization used by ``run()`` and ``run_stream()``.
+
+        Yields any chunks produced by streaming extensions and finally a
+        ``run_end`` event.
+        """
+        streamers = streamers if streamers is not None else []
+        pending = pending if pending is not None else []
+
+        delta_messages = self._messages_to_persist(original_history, result.all_messages())
+        usage = result.usage
+
+        payload = {"session_id": session_id, "output": output, "usage": usage}
+        await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, payload)
+        await self._notify_streamers(streamers, AgentRunnerEvent.AFTER_AGENT_RUN, payload, pending)
+        async for chunk in self._drain_pending(pending):
+            yield chunk
+
+        await self._session_manager.save_messages(session_id, delta_messages)
+        save_payload = {"session_id": session_id, "delta_messages": delta_messages}
+        await self._fire(AgentRunnerEvent.SESSION_SAVE, save_payload)
+        await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_SAVE, save_payload, pending)
+        async for chunk in self._drain_pending(pending):
+            yield chunk
+
+        if needs_compaction:
+            comp_result = await self._fire_notify(AgentRunnerEvent.COMPACTION_TRIGGER, {
+                "session_id": session_id,
+            })
+            cancelled = comp_result.get("cancel", False)
+            if not cancelled:
+                asyncio.create_task(self._trigger_compaction(session_id))
+            applied_payload = {"session_id": session_id, "cancelled": bool(cancelled)}
+            await self._fire(AgentRunnerEvent.COMPACTION_APPLIED, applied_payload)
+            await self._notify_streamers(streamers, AgentRunnerEvent.COMPACTION_APPLIED, applied_payload, pending)
+            async for chunk in self._drain_pending(pending):
+                yield chunk
+
+        end_payload = {"session_id": session_id}
+        await self._fire(AgentRunnerEvent.SESSION_END, end_payload)
+        await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_END, end_payload, pending)
+        async for chunk in self._drain_pending(pending):
+            yield chunk
+
+        yield {
+            "type": "run_end",
+            "session_id": session_id,
+            "output": output,
+            "new_messages": delta_messages,
+            "usage": usage,
+        }
+
+    async def run(self, prompt: str, *, session_id: str | None = None) -> RunResult:
+        session_id, history, original_history, needs_compaction = await self._setup_run(
+            prompt, session_id
+        )
+        agent = await self._build_agent(history, session_id)
 
         output_parts: list[str] = []
         async with agent.run_stream(prompt, message_history=history) as result:
@@ -460,39 +563,19 @@ class AgentRunner:
                 )
 
         output = "".join(output_parts)
-        delta_messages = self._messages_to_persist(original_history, result.all_messages())
-        usage = result.usage
+        async for event in self._finalize_run(
+            session_id, original_history, result, output, needs_compaction
+        ):
+            if event["type"] == "run_end":
+                return RunResult(
+                    output=event["output"],
+                    session_id=event["session_id"],
+                    new_messages=event["new_messages"],
+                    usage=event["usage"],
+                )
 
-        await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, {
-            "session_id": session_id, "output": output, "usage": usage,
-        })
-
-        # SESSION_SAVE
-        await self._session_manager.save_messages(session_id, delta_messages)
-        await self._fire(AgentRunnerEvent.SESSION_SAVE, {
-            "session_id": session_id,
-            "delta_messages": delta_messages,
-        })
-
-        # COMPACTION_TRIGGER — extensions can cancel
-        if needs_compaction:
-            comp_result = await self._fire_notify(AgentRunnerEvent.COMPACTION_TRIGGER, {
-                "session_id": session_id,
-            })
-            cancelled = comp_result.get("cancel", False)
-            if not cancelled:
-                asyncio.create_task(self._trigger_compaction(session_id))
-            await self._fire(
-                AgentRunnerEvent.COMPACTION_APPLIED,
-                {"session_id": session_id, "cancelled": bool(cancelled)},
-            )
-
-        await self._fire(AgentRunnerEvent.SESSION_END, {"session_id": session_id})
-
-        return RunResult(
-            output=output, session_id=session_id,
-            new_messages=delta_messages, usage=usage,
-        )
+        # pragma: no cover - _finalize_run always yields run_end
+        raise RuntimeError("run did not produce a run_end event")
 
     async def run_stream(
         self, prompt: str, *, session_id: str | None = None
@@ -503,87 +586,14 @@ class AgentRunner:
         ``on_agent_runner_event`` exactly as in ``run()``.  The final event
         is always ``{"type": "run_end", ...}``.
         """
-        if session_id is None:
-            session_id = await self._session_manager.create_session()
-
-        await self._fire(AgentRunnerEvent.SESSION_START, {"session_id": session_id})
-
-        if self._context_manager is None:
-            raise RuntimeError("ContextManager is not configured")
-
-        history = await self._session_manager.load_history(session_id)
-        original_history = list(history)
-
-        # CONTEXT_PREPARE — ContextManager first, then extensions
-        needs_compaction = False
-        try:
-            prepared = await self._context_manager.prepare(
-                history,
-                system_prompt=self._config.instructions,
-                current_state=BaselineState(),
-            )
-            history = prepared.messages
-            needs_compaction = prepared.needs_compaction
-        except Exception as exc:  # pragma: no cover - fail-open
-            logging.getLogger(__name__).warning(
-                "ContextManager prepare failed: %s", exc, exc_info=True
-            )
-
-        ctx_data = {
-            "session_id": session_id,
-            "messages": history,
-            "needs_compaction": needs_compaction,
-        }
-        ctx_result = await self._fire(AgentRunnerEvent.CONTEXT_PREPARE, ctx_data)
-        history = ctx_result.get("messages", history)
-        needs_compaction = ctx_result.get("needs_compaction", needs_compaction)
-
-        # BEFORE_AGENT_RUN — extensions can modify messages, not system_prompt
-        before_data = {"session_id": session_id, "messages": history}
-        before_result = await self._fire(AgentRunnerEvent.BEFORE_AGENT_RUN, before_data)
-        if "messages" in before_result:
-            history = before_result["messages"]
-
-        # AGENT_RUN
-        await self._fire(
-            AgentRunnerEvent.AGENT_RUN,
-            {"session_id": session_id, "prompt": prompt, "messages": history},
+        session_id, history, original_history, needs_compaction = await self._setup_run(
+            prompt, session_id
         )
 
-        # Streaming extensions receive the same events as old extensions.
-        # The Protocol default implementation is an empty async generator, so
-        # old extensions are harmless even when included here.
         streamers = list(self._extensions)
         pending: list[dict] = []
-
-        async def _notify_streamers(event: str, data: dict) -> None:
-            for s in streamers:
-                try:
-                    async for chunk in s.on_agent_runner_event_stream(event, data):
-                        pending.append(chunk)
-                except Exception as exc:  # pragma: no cover - fail-open
-                    logging.getLogger(__name__).warning(
-                        "Streaming extension %s failed: %s",
-                        type(s).__name__, exc,
-                        exc_info=True,
-                    )
-
-        hooks = self._build_hooks(session_id, pending=pending, streamers=streamers)
-
-        capabilities = self._build_capabilities() or []
-        if hooks not in capabilities:
-            capabilities.append(hooks)
-
-        model_settings = ModelSettings(
-            parallel_tool_calls=self._settings.parallel_tool_calls,
-        )
-
-        agent = Agent(
-            model=self._build_model(),
-            instructions=self._config.instructions,
-            tools=await self._get_tools(),
-            capabilities=capabilities or None,
-            model_settings=model_settings,
+        agent = await self._build_agent(
+            history, session_id, pending=pending, streamers=streamers
         )
 
         output_parts: list[str] = []
@@ -596,64 +606,18 @@ class AgentRunner:
                     "data": {"chunk": text},
                 }
                 await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
-                await _notify_streamers(AgentRunnerEvent.AGENT_RUN, payload)
-                while pending:
-                    yield pending.pop(0)
+                await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_RUN, payload, pending)
+                async for chunk in self._drain_pending(pending):
+                    yield chunk
 
         output = "".join(output_parts)
-        delta_messages = self._messages_to_persist(original_history, result.all_messages())
-        usage = result.usage
-
-        await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, {
-            "session_id": session_id, "output": output, "usage": usage,
-        })
-        await _notify_streamers(AgentRunnerEvent.AFTER_AGENT_RUN, {
-            "session_id": session_id, "output": output, "usage": usage,
-        })
-        while pending:
-            yield pending.pop(0)
-
-        # SESSION_SAVE
-        await self._session_manager.save_messages(session_id, delta_messages)
-        await self._fire(AgentRunnerEvent.SESSION_SAVE, {
-            "session_id": session_id,
-            "delta_messages": delta_messages,
-        })
-        await _notify_streamers(AgentRunnerEvent.SESSION_SAVE, {
-            "session_id": session_id,
-            "delta_messages": delta_messages,
-        })
-        while pending:
-            yield pending.pop(0)
-
-        # COMPACTION_TRIGGER — extensions can cancel
-        if needs_compaction:
-            comp_result = await self._fire_notify(AgentRunnerEvent.COMPACTION_TRIGGER, {
-                "session_id": session_id,
-            })
-            cancelled = comp_result.get("cancel", False)
-            if not cancelled:
-                asyncio.create_task(self._trigger_compaction(session_id))
-            await self._fire(
-                AgentRunnerEvent.COMPACTION_APPLIED,
-                {"session_id": session_id, "cancelled": bool(cancelled)},
-            )
-            await _notify_streamers(
-                AgentRunnerEvent.COMPACTION_APPLIED,
-                {"session_id": session_id, "cancelled": bool(cancelled)},
-            )
-            while pending:
-                yield pending.pop(0)
-
-        await self._fire(AgentRunnerEvent.SESSION_END, {"session_id": session_id})
-        await _notify_streamers(AgentRunnerEvent.SESSION_END, {"session_id": session_id})
-        while pending:
-            yield pending.pop(0)
-
-        yield {
-            "type": "run_end",
-            "session_id": session_id,
-            "output": output,
-            "new_messages": delta_messages,
-            "usage": usage,
-        }
+        async for event in self._finalize_run(
+            session_id,
+            original_history,
+            result,
+            output,
+            needs_compaction,
+            streamers=streamers,
+            pending=pending,
+        ):
+            yield event
