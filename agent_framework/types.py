@@ -42,6 +42,10 @@ class ToolSource(ABC):
     @property
     @abstractmethod
     def source_id(self) -> str: ...
+    @property
+    def scope(self) -> str:
+        """Visibility scope for this source. Defaults to global ('all')."""
+        return "all"
 
 
 # ── Event enums ───────────────────────────────────────────────────────
@@ -59,6 +63,8 @@ class AgentRunnerEvent(StrEnum):
     CONTEXT_PREPARE = "context_prepare"
     BEFORE_AGENT_RUN = "before_agent_run"
     AGENT_RUN = "agent_run"
+    TOOL_CALL = "tool_call"
+    TOOL_RESULT = "tool_result"
     AFTER_AGENT_RUN = "after_agent_run"
     SESSION_SAVE = "session_save"
     COMPACTION_TRIGGER = "compaction_trigger"

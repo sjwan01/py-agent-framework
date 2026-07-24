@@ -1,10 +1,13 @@
 """Session adapters — SingleTurn (no-op) and Local (SQLite)."""
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import aiosqlite
 import ujson
+
+from pydantic_ai.messages import ModelRequest, ModelResponse
 
 from agent_framework.types import SessionManager
 
@@ -37,6 +40,7 @@ class SingleTurnSessionManager(SessionManager):
         return []
 
     async def save_messages(self, session_id: str, messages: list) -> None:
+        """No-op: single-turn sessions do not persist history."""
         pass
 
     async def apply_compaction(self, session_id: str, summary: str, boundary_entry_id: str) -> None:
@@ -47,66 +51,80 @@ class LocalSessionManager(SessionManager):
     def __init__(self, *, db_path: str, serializer):
         self._db_path = db_path
         self._serializer = serializer
-        self._db: aiosqlite.Connection | None = None
+        self._schema_initialized = False
 
-    async def _get_db(self) -> aiosqlite.Connection:
-        if self._db is None:
-            self._db = await aiosqlite.connect(self._db_path)
-            self._db.row_factory = aiosqlite.Row
-            await self._db.executescript(SCHEMA)
-            await self._db.commit()
-        return self._db
+    @asynccontextmanager
+    async def _connect(self):
+        db = await aiosqlite.connect(self._db_path)
+        db.row_factory = aiosqlite.Row
+        if not self._schema_initialized:
+            await db.executescript(SCHEMA)
+            await db.commit()
+            self._schema_initialized = True
+        try:
+            yield db
+        finally:
+            await db.close()
 
     async def create_session(self, *, metadata: dict | None = None) -> str:
-        db = await self._get_db()
         sid = str(uuid4())
-        await db.execute(
-            "INSERT INTO sessions (session_id, metadata) VALUES (?, ?)",
-            (sid, ujson.dumps(metadata or {})),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO sessions (session_id, metadata) VALUES (?, ?)",
+                (sid, ujson.dumps(metadata or {})),
+            )
+            await db.commit()
         return sid
 
     async def load_history(self, session_id: str) -> list:
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT content FROM messages WHERE session_id = ? ORDER BY turn_index",
-            (session_id,),
-        )
-        rows = await cursor.fetchall()
-        return [self._serializer.deserialize(row["content"]) for row in rows]
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT content FROM messages WHERE session_id = ? AND role != 'compaction' ORDER BY turn_index",
+                (session_id,),
+            )
+            rows = await cursor.fetchall()
+            return [self._serializer.deserialize(row["content"]) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
-        db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT COALESCE(MAX(turn_index), -1) + 1 AS next_turn FROM messages WHERE session_id = ?",
-            (session_id,),
-        )
-        row = await cursor.fetchone()
-        turn = row["next_turn"]
-        for msg in messages:
-            role = _infer_role(msg)
-            content = self._serializer.serialize(msg)
-            await db.execute(
-                "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, ?, ?, ?)",
-                (str(uuid4()), session_id, turn, role, content),
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT COALESCE(MAX(turn_index), -1) + 1 AS next_turn FROM messages WHERE session_id = ?",
+                (session_id,),
             )
-            turn += 1
-        await db.commit()
+            row = await cursor.fetchone()
+            turn = row["next_turn"]
+            for msg in messages:
+                role = _infer_role(msg)
+                content = self._serializer.serialize(msg)
+                await db.execute(
+                    "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, ?, ?, ?)",
+                    (str(uuid4()), session_id, turn, role, content),
+                )
+                turn += 1
+            await db.commit()
 
     async def apply_compaction(self, session_id: str, summary: str, boundary_entry_id: str) -> None:
-        db = await self._get_db()
-        await db.execute(
-            "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, -1, ?, ?)",
-            (str(uuid4()), session_id, "compaction", ujson.dumps({
-                "type": "compaction", "summary": summary, "boundary": boundary_entry_id,
-            })),
-        )
-        await db.commit()
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, -1, ?, ?)",
+                (str(uuid4()), session_id, "compaction", ujson.dumps({
+                    "type": "compaction", "summary": summary, "boundary_entry_id": boundary_entry_id,
+                })),
+            )
+            await db.commit()
+
+    async def cleanup_stale_sessions(self, timeout_seconds: int | None = None) -> int:
+        """Delete sessions older than ``timeout_seconds`` (defaults to 1 day)."""
+        timeout = timeout_seconds if timeout_seconds is not None else 86400
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "DELETE FROM sessions WHERE created_at < datetime('now', '-{} seconds')".format(timeout),
+            )
+            await db.commit()
+            return cursor.rowcount
 
 
 def _infer_role(msg) -> str:
-    from pydantic_ai.messages import ModelRequest, ModelResponse
     if isinstance(msg, ModelRequest):
         parts = msg.parts
         if parts and hasattr(parts[0], "tool_name"):

@@ -10,6 +10,15 @@ from dataclasses import asdict
 from datetime import datetime
 import ujson
 
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+    ToolReturnPart,
+    TextPart,
+    ToolCallPart,
+)
+
 
 class MessageSerializer:
     """Serialize and deserialize Pydantic AI messages for storage."""
@@ -22,7 +31,6 @@ class MessageSerializer:
 
     def deserialize(self, data: str) -> object:
         """JSON string → Message. Uses 'kind' field to discriminate."""
-        from pydantic_ai.messages import ModelRequest, ModelResponse
         d = ujson.loads(data) if isinstance(data, str) else data
         kind = d.get("kind", "")
         if kind == "request":
@@ -33,7 +41,6 @@ class MessageSerializer:
 
 
 def _dict_to_request(d: dict):
-    from pydantic_ai.messages import ModelRequest, UserPromptPart, ToolReturnPart
     parts = []
     for p in d.get("parts", []):
         pk = p.get("part_kind", "")
@@ -57,7 +64,6 @@ def _dict_to_request(d: dict):
 
 
 def _dict_to_response(d: dict):
-    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
     parts = []
     for p in d.get("parts", []):
         pk = p.get("part_kind", "")
@@ -81,7 +87,6 @@ def _dict_to_response(d: dict):
 
 def _convert_datetimes(d: dict) -> None:
     """Recursively convert datetime values to ISO strings in-place."""
-    from datetime import datetime
     for key, value in d.items():
         if isinstance(value, datetime):
             d[key] = value.isoformat()

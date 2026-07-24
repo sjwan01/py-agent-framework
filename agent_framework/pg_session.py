@@ -31,14 +31,28 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_turn_pg
 
 
 class PostgresSessionManager(SessionManager):
-    def __init__(self, *, pg_url: str, serializer):
+    def __init__(
+        self,
+        *,
+        pg_url: str,
+        serializer,
+        pool_size: int = 5,
+        max_overflow: int = 10,
+    ):
         self._pg_url = pg_url
         self._serializer = serializer
+        self._pool_size = pool_size
+        self._max_overflow = max_overflow
         self._pool: AsyncConnectionPool | None = None
 
     async def _get_pool(self) -> AsyncConnectionPool:
         if self._pool is None:
-            self._pool = AsyncConnectionPool(self._pg_url, open=False)
+            self._pool = AsyncConnectionPool(
+                self._pg_url,
+                min_size=self._pool_size,
+                max_size=self._pool_size + self._max_overflow,
+                open=False,
+            )
             await self._pool.open()
             async with self._pool.connection() as conn:
                 await conn.execute(PG_SCHEMA)
@@ -58,7 +72,7 @@ class PostgresSessionManager(SessionManager):
         pool = await self._get_pool()
         async with pool.connection() as conn:
             cursor = await conn.execute(
-                "SELECT content FROM messages WHERE session_id = %s ORDER BY turn_index",
+                "SELECT content FROM messages WHERE session_id = %s AND role != 'compaction' ORDER BY turn_index",
                 (session_id,),
             )
             rows = await cursor.fetchall()
@@ -87,6 +101,22 @@ class PostgresSessionManager(SessionManager):
             await conn.execute(
                 "INSERT INTO messages (session_id, turn_index, role, content) VALUES (%s, -1, %s, %s)",
                 (session_id, "compaction", ujson.dumps({
-                    "type": "compaction", "summary": summary, "boundary": boundary_entry_id,
+                    "type": "compaction", "summary": summary, "boundary_entry_id": boundary_entry_id,
                 })),
             )
+
+    async def cleanup_stale_sessions(self, timeout_seconds: int | None = None) -> int:
+        """Delete sessions older than ``timeout_seconds`` (defaults to 1 day)."""
+        timeout = timeout_seconds if timeout_seconds is not None else 86400
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM sessions WHERE created_at < now() - make_interval(secs => %s)",
+                (timeout,),
+            )
+            return cursor.rowcount
+
+    async def close(self) -> None:
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
