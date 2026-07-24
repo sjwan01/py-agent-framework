@@ -120,7 +120,6 @@ class AgentRunner:
 
     async def _build_agent(
         self,
-        history: list,
         session_id: str,
         *,
         pending: list | None = None,
@@ -211,7 +210,7 @@ class AgentRunner:
         session_id, history, original_history, needs_compaction = await self._setup_run(
             prompt, session_id
         )
-        agent = await self._build_agent(history, session_id)
+        agent = await self._build_agent(session_id)
 
         output_parts: list[str] = []
         async with agent.run_stream(prompt, message_history=history) as result:
@@ -257,7 +256,7 @@ class AgentRunner:
         streamers = list(self._extensions)
         pending: list[dict] = []
         agent = await self._build_agent(
-            history, session_id, pending=pending, streamers=streamers
+            session_id, pending=pending, streamers=streamers
         )
 
         output_parts: list[str] = []
