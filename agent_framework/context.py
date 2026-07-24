@@ -3,24 +3,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
 from agent_framework.models import PreparedContext, BaselineState
-
-
-async def _clear_tool_results(messages: list, keep_pairs: int) -> list:
-    """Use Harness ClearToolResults to blank old tool results.
-
-    This keeps tool-call / tool-return pairing intact while reclaiming tokens
-    from older tool outputs. ``keep_pairs`` is aligned with V2's ``protect_turns``
-    concept: the most recent N matched pairs are preserved.
-    """
-    from pydantic_ai_harness.compaction import ClearToolResults
-
-    # ``max_tokens=1`` forces the strategy to compact every time it is invoked;
-    # V2 already gates invocation on its own watermark logic.
-    strategy = ClearToolResults(keep_pairs=keep_pairs, max_tokens=1)
-    return await strategy.compact(messages, None)  # type: ignore[arg-type]
 
 
 class ContextManager:
@@ -30,12 +15,14 @@ class ContextManager:
         low_watermark_ratio: float = 0.6,
         high_watermark_ratio: float = 0.75,
         protect_turns: int = 5,
+        truncate_chars: int = 1_000,
         token_estimator=None,
         context_window_cap: int | None = None,
     ):
         self._low = low_watermark_ratio
         self._high = high_watermark_ratio
         self._protect = protect_turns
+        self._truncate_chars = truncate_chars
         self._estimate = token_estimator or _default_estimate
         self._context_window_cap = context_window_cap
         self._frozen_baseline: str | None = None
@@ -62,7 +49,8 @@ class ContextManager:
         high_mark = context_cap * self._high
 
         if tokens > low_mark:
-            messages = await _clear_tool_results(messages, self._protect)
+            boundary = _find_turn_boundary(messages, self._protect)
+            messages = _truncate_old_tool_results(messages, boundary, self._truncate_chars)
 
         tokens_after = self._estimate(messages)
         return PreparedContext(
@@ -104,6 +92,39 @@ def _is_turn_start(msg) -> bool:
     if isinstance(msg, ModelRequest):
         return bool(msg.parts) and isinstance(msg.parts[0], UserPromptPart)
     return False
+
+
+def _truncate_old_tool_results(messages: list, boundary: int, max_chars: int) -> list:
+    """Return a new list where old tool results are truncated to ``max_chars``.
+
+    Only plain ``ToolReturnPart`` instances are truncated; typed subclasses
+    (e.g. framework-typed returns) are left intact so their structured content
+    survives round-trips. Tool-call / tool-return pairing is preserved.
+    """
+    from dataclasses import replace
+
+    out: list = []
+    for i, msg in enumerate(messages):
+        if not isinstance(msg, ModelRequest) or i >= boundary:
+            out.append(msg)
+            continue
+        new_parts: list = []
+        changed = False
+        for part in msg.parts:
+            if (
+                type(part) is ToolReturnPart
+                and isinstance(part.content, str)
+                and len(part.content) > max_chars
+            ):
+                new_parts.append(replace(part, content=part.content[:max_chars]))
+                changed = True
+            else:
+                new_parts.append(part)
+        if changed:
+            out.append(replace(msg, parts=new_parts))
+        else:
+            out.append(msg)
+    return out
 
 
 def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:

@@ -64,6 +64,7 @@ class AgentRunner:
             low_watermark_ratio=self._settings.low_watermark_ratio,
             high_watermark_ratio=self._settings.high_watermark_ratio,
             protect_turns=self._settings.protect_turns,
+            truncate_chars=self._settings.truncate_tool_result_chars,
         )
 
     def _default_compaction_summarizer(self) -> CompactionSummarizer | None:
