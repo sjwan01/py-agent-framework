@@ -19,7 +19,6 @@ from agent_framework.compaction import CompactionSummarizer, HarnessSummarizer
 from agent_framework.context import ContextManager
 from agent_framework.models import AgentConfig, RunResult, BaselineState
 from agent_framework.pg_session import PostgresSessionManager
-from agent_framework.serializer import MessageSerializer
 from agent_framework.settings import Settings
 from agent_framework.session import LocalSessionManager
 from agent_framework.tools import LocalToolSource, ToolLifecycle
@@ -78,7 +77,6 @@ class AgentRunner:
         if self._settings.postgres_url:
             return PostgresSessionManager(
                 pg_url=self._settings.postgres_url,
-                serializer=MessageSerializer(),
                 pool_size=self._settings.pg_pool_size,
                 max_overflow=self._settings.pg_max_overflow,
             )
@@ -88,7 +86,6 @@ class AgentRunner:
             os.close(fd)
         return LocalSessionManager(
             db_path=db_path,
-            serializer=MessageSerializer(),
         )
 
     async def _ensure_tool_lifecycle(self) -> ToolLifecycle | None:
@@ -151,6 +148,43 @@ class AgentRunner:
             ),
         )
 
+    @staticmethod
+    def _messages_to_persist(original_history: list, all_messages: list) -> list:
+        """Return messages that should be persisted for this turn.
+
+        ``result.new_messages()`` cannot be used here because extensions may
+        inject messages into ``message_history`` before the agent runs, and
+        the SDK treats those injected messages as existing history and omits
+        them from ``new_messages()``.  We therefore diff ``all_messages()``
+        against the originally loaded history.
+        """
+        original_ids = {id(m) for m in original_history}
+
+        def _key(m) -> tuple:
+            kind = "request" if isinstance(m, ModelRequest) else (
+                "response" if isinstance(m, ModelResponse) else type(m).__name__
+            )
+            parts: list = []
+            for part in getattr(m, "parts", ()):
+                pk = getattr(part, "part_kind", None)
+                if pk == "user-prompt":
+                    parts.append(("user-prompt", part.content))
+                elif pk == "tool-return":
+                    parts.append(("tool-return", part.tool_name, part.tool_call_id, str(part.content)))
+                elif pk == "text":
+                    parts.append(("text", part.content))
+                elif pk == "tool-call":
+                    parts.append(("tool-call", part.tool_name, part.tool_call_id, str(part.args)))
+                else:
+                    parts.append((str(pk), repr(part)))
+            return (kind, getattr(m, "run_id", None), tuple(parts))
+
+        original_keys = {_key(m) for m in original_history}
+        return [
+            m for m in all_messages
+            if id(m) not in original_ids and _key(m) not in original_keys
+        ]
+
     def _build_capabilities(self) -> list:
         capabilities = list(self._config.capabilities)
         if self._config.hooks is not None:
@@ -208,44 +242,6 @@ class AgentRunner:
             msg = messages[boundary - 1]
             return getattr(msg, "run_id", None) or f"msg-{boundary - 1}"
         return f"msg-{boundary}"
-
-    @staticmethod
-    def _compute_delta(history: list, all_messages: list) -> list:
-        """Return messages produced in the current turn (not in input history).
-
-        Uses identity first; if Pydantic AI ever copies history items, falls
-        back to a stable content key based on kind, run_id and parts.
-        """
-        history_ids = {id(m) for m in history}
-
-        def _key(m) -> tuple:
-            kind = "request" if isinstance(m, ModelRequest) else (
-                "response" if isinstance(m, ModelResponse) else type(m).__name__
-            )
-            parts: list = []
-            for part in getattr(m, "parts", ()):
-                pk = getattr(part, "part_kind", None)
-                if pk == "user-prompt":
-                    parts.append(("user-prompt", part.content))
-                elif pk == "tool-return":
-                    parts.append(("tool-return", part.tool_name, part.tool_call_id, str(part.content)))
-                elif pk == "text":
-                    parts.append(("text", part.content))
-                elif pk == "tool-call":
-                    parts.append(("tool-call", part.tool_name, part.tool_call_id, str(part.args)))
-                else:
-                    parts.append((str(pk), repr(part)))
-            return (kind, getattr(m, "run_id", None), tuple(parts))
-
-        history_keys = {_key(m) for m in history}
-        delta = []
-        for m in all_messages:
-            if id(m) in history_ids:
-                continue
-            if _key(m) in history_keys:
-                continue
-            delta.append(m)
-        return delta
 
     async def _trigger_compaction(self, session_id: str) -> None:
         try:
@@ -305,6 +301,7 @@ class AgentRunner:
         await self._fire(AgentRunnerEvent.SESSION_START, {"session_id": session_id})
 
         history = await self._session_manager.load_history(session_id)
+        original_history = list(history)
 
         # CONTEXT_PREPARE — ContextManager first, then extensions
         needs_compaction = False
@@ -422,7 +419,7 @@ class AgentRunner:
 
         output_parts: list[str] = []
         async with agent.run_stream(prompt, message_history=history) as result:
-            async for text in result.stream_text(delta=True):
+            async for text in result.stream_text(delta=False):
                 output_parts.append(text)
                 await self._fire(
                     AgentRunnerEvent.AGENT_RUN,
@@ -434,8 +431,7 @@ class AgentRunner:
                 )
 
         output = "".join(output_parts)
-        new_messages = result.all_messages()
-        delta_messages = self._compute_delta(history, new_messages)
+        delta_messages = self._messages_to_persist(original_history, result.all_messages())
         usage = result.usage
 
         await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, {
@@ -466,5 +462,5 @@ class AgentRunner:
 
         return RunResult(
             output=output, session_id=session_id,
-            new_messages=new_messages, usage=usage,
+            new_messages=delta_messages, usage=usage,
         )

@@ -6,8 +6,8 @@ from uuid import uuid4
 import ujson
 from psycopg_pool import AsyncConnectionPool
 
+from agent_framework.session import _infer_role, _MessageAdapter
 from agent_framework.types import SessionManager
-from agent_framework.session import _infer_role
 
 PG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -35,12 +35,10 @@ class PostgresSessionManager(SessionManager):
         self,
         *,
         pg_url: str,
-        serializer,
         pool_size: int = 5,
         max_overflow: int = 10,
     ):
         self._pg_url = pg_url
-        self._serializer = serializer
         self._pool_size = pool_size
         self._max_overflow = max_overflow
         self._pool: AsyncConnectionPool | None = None
@@ -76,7 +74,7 @@ class PostgresSessionManager(SessionManager):
                 (session_id,),
             )
             rows = await cursor.fetchall()
-        return [self._serializer.deserialize(row[0]) for row in rows]
+        return [_deserialize_pg_message(row[0]) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
         pool = await self._get_pool()
@@ -88,7 +86,7 @@ class PostgresSessionManager(SessionManager):
             turn = (await cursor.fetchone())[0]
             for msg in messages:
                 role = _infer_role(msg)
-                content = self._serializer.serialize(msg)
+                content = _MessageAdapter.dump_json(msg).decode()
                 await conn.execute(
                     "INSERT INTO messages (session_id, turn_index, role, content) VALUES (%s, %s, %s, %s)",
                     (session_id, turn, role, content),
@@ -120,3 +118,10 @@ class PostgresSessionManager(SessionManager):
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
+
+
+def _deserialize_pg_message(data) -> object:
+    """Deserialize a JSONB value that may be returned as str or dict."""
+    if isinstance(data, dict):
+        return _MessageAdapter.validate_python(data)
+    return _MessageAdapter.validate_json(data.encode())

@@ -6,8 +6,8 @@ from uuid import uuid4
 
 import aiosqlite
 import ujson
-
-from pydantic_ai.messages import ModelRequest, ModelResponse
+from pydantic import TypeAdapter
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 
 from agent_framework.types import SessionManager
 
@@ -31,6 +31,9 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_turn
     ON messages(session_id, turn_index);
 """
 
+_MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)
+"""SDK-backed serializer for a single message (DB stores one message per row)."""
+
 
 class SingleTurnSessionManager(SessionManager):
     async def create_session(self, *, metadata: dict | None = None) -> str:
@@ -48,9 +51,8 @@ class SingleTurnSessionManager(SessionManager):
 
 
 class LocalSessionManager(SessionManager):
-    def __init__(self, *, db_path: str, serializer):
+    def __init__(self, *, db_path: str):
         self._db_path = db_path
-        self._serializer = serializer
         self._schema_initialized = False
 
     @asynccontextmanager
@@ -83,7 +85,7 @@ class LocalSessionManager(SessionManager):
                 (session_id,),
             )
             rows = await cursor.fetchall()
-            return [self._serializer.deserialize(row["content"]) for row in rows]
+            return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
         async with self._connect() as db:
@@ -95,7 +97,7 @@ class LocalSessionManager(SessionManager):
             turn = row["next_turn"]
             for msg in messages:
                 role = _infer_role(msg)
-                content = self._serializer.serialize(msg)
+                content = _MessageAdapter.dump_json(msg).decode()
                 await db.execute(
                     "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, ?, ?, ?)",
                     (str(uuid4()), session_id, turn, role, content),
