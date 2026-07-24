@@ -8,6 +8,21 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 from agent_framework.models import PreparedContext, BaselineState
 
 
+async def _clear_tool_results(messages: list, keep_pairs: int) -> list:
+    """Use Harness ClearToolResults to blank old tool results.
+
+    This keeps tool-call / tool-return pairing intact while reclaiming tokens
+    from older tool outputs. ``keep_pairs`` is aligned with V2's ``protect_turns``
+    concept: the most recent N matched pairs are preserved.
+    """
+    from pydantic_ai_harness.compaction import ClearToolResults
+
+    # ``max_tokens=1`` forces the strategy to compact every time it is invoked;
+    # V2 already gates invocation on its own watermark logic.
+    strategy = ClearToolResults(keep_pairs=keep_pairs, max_tokens=1)
+    return await strategy.compact(messages, None)  # type: ignore[arg-type]
+
+
 class ContextManager:
     def __init__(
         self,
@@ -15,14 +30,12 @@ class ContextManager:
         low_watermark_ratio: float = 0.6,
         high_watermark_ratio: float = 0.75,
         protect_turns: int = 5,
-        truncate_chars: int = 1_000,
         token_estimator=None,
         context_window_cap: int | None = None,
     ):
         self._low = low_watermark_ratio
         self._high = high_watermark_ratio
         self._protect = protect_turns
-        self._truncate_chars = truncate_chars
         self._estimate = token_estimator or _default_estimate
         self._context_window_cap = context_window_cap
         self._frozen_baseline: str | None = None
@@ -38,7 +51,8 @@ class ContextManager:
             self._frozen_baseline = system_prompt
             self._baseline_state = current_state
         else:
-            diff = _compute_diff(self._baseline_state, current_state)
+            baseline = self._baseline_state or BaselineState()
+            diff = _compute_diff(baseline, current_state)
             if diff:
                 messages = _inject_diff(messages, diff)
 
@@ -48,8 +62,7 @@ class ContextManager:
         high_mark = context_cap * self._high
 
         if tokens > low_mark:
-            boundary = _find_turn_boundary(messages, self._protect)
-            _truncate_old_tool_results(messages, boundary, self._truncate_chars)
+            messages = await _clear_tool_results(messages, self._protect)
 
         tokens_after = self._estimate(messages)
         return PreparedContext(
@@ -91,31 +104,6 @@ def _is_turn_start(msg) -> bool:
     if isinstance(msg, ModelRequest):
         return bool(msg.parts) and isinstance(msg.parts[0], UserPromptPart)
     return False
-
-
-def _truncate_old_tool_results(messages: list, boundary: int, max_chars: int) -> None:
-    for i, msg in enumerate(messages[:boundary]):
-        if not isinstance(msg, ModelRequest):
-            continue
-        new_parts = []
-        changed = False
-        for part in msg.parts:
-            if hasattr(part, "tool_name") and hasattr(part, "content"):
-                if isinstance(part.content, str) and len(part.content) > max_chars:
-                    part = type(part)(
-                        tool_name=part.tool_name,
-                        content=part.content[:max_chars],
-                        tool_call_id=part.tool_call_id,
-                        timestamp=part.timestamp,
-                    )
-                    changed = True
-            new_parts.append(part)
-        if changed:
-            messages[i] = ModelRequest(
-                parts=new_parts, kind=msg.kind, run_id=msg.run_id,
-                conversation_id=msg.conversation_id, instructions=msg.instructions,
-                timestamp=msg.timestamp,
-            )
 
 
 def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:

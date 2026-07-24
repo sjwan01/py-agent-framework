@@ -29,7 +29,6 @@ class Settings(BaseSettings):
     low_watermark_ratio: float = 0.6
     high_watermark_ratio: float = 0.75
     protect_turns: int = 5
-    truncate_tool_result_chars: int = 1_000
 
     # Tool execution guardrails
     max_tool_calls_per_turn: int = 5

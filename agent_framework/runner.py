@@ -15,7 +15,7 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.settings import ModelSettings
 
-from agent_framework.compaction import CompactionSummarizer, LLMCompactionSummarizer
+from agent_framework.compaction import CompactionSummarizer, HarnessSummarizer
 from agent_framework.context import ContextManager
 from agent_framework.models import AgentConfig, RunResult, BaselineState
 from agent_framework.pg_session import PostgresSessionManager
@@ -64,13 +64,12 @@ class AgentRunner:
             low_watermark_ratio=self._settings.low_watermark_ratio,
             high_watermark_ratio=self._settings.high_watermark_ratio,
             protect_turns=self._settings.protect_turns,
-            truncate_chars=self._settings.truncate_tool_result_chars,
         )
 
     def _default_compaction_summarizer(self) -> CompactionSummarizer | None:
-        """Create a default LLM summarizer if a compaction model is configured."""
+        """Create a default Harness-backed summarizer if a compaction model is configured."""
         if self._settings.compaction_model_id:
-            return LLMCompactionSummarizer(self._settings)
+            return HarnessSummarizer(self._settings)
         return None
 
     def _default_session_manager(self) -> SessionManager:
