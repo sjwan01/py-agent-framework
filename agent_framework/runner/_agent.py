@@ -9,7 +9,6 @@ from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
 
 from agent_framework.compaction import CompactionSummarizer
-from agent_framework.context import ContextManager
 from agent_framework.models import AgentConfig, RunResult, BaselineState
 from agent_framework.settings import Settings
 from agent_framework.types import SessionManager, AgentRunnerEvent

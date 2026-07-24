@@ -8,8 +8,6 @@ from pydantic_ai.messages import ModelRequest, ModelResponse
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from agent_framework.types import AgentRunnerEvent
-
 
 def build_model(self):
     """Return the model override or build an OpenAI-compatible model from settings.
