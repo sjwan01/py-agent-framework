@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-import ujson
+import json
 from psycopg_pool import AsyncConnectionPool
 
 from agent_framework.session._shared import _infer_role, _MessageAdapter
@@ -85,7 +85,7 @@ class PostgresSessionManager(SessionManager):
         async with pool.connection() as conn:
             await conn.execute(
                 "INSERT INTO sessions (session_id, metadata) VALUES (%s, %s)",
-                (sid, ujson.dumps(metadata or {})),
+                (sid, json.dumps(metadata or {})),
             )
         return sid
 
@@ -130,7 +130,7 @@ class PostgresSessionManager(SessionManager):
         async with pool.connection() as conn:
             await conn.execute(
                 "INSERT INTO messages (session_id, turn_index, role, content) VALUES (%s, -1, %s, %s)",
-                (session_id, "compaction", ujson.dumps({
+                (session_id, "compaction", json.dumps({
                     "type": "compaction",
                     "summary": summary,
                     "boundary_entry_id": boundary_entry_id,

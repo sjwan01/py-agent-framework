@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import aiosqlite
-import ujson
+import json
 
 from agent_framework.session._shared import _infer_role, _MessageAdapter
 from agent_framework.types import SessionManager
@@ -75,7 +75,7 @@ class LocalSessionManager(SessionManager):
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO sessions (session_id, metadata) VALUES (?, ?)",
-                (sid, ujson.dumps(metadata or {})),
+                (sid, json.dumps(metadata or {})),
             )
             await db.commit()
         return sid
@@ -129,7 +129,7 @@ class LocalSessionManager(SessionManager):
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, -1, ?, ?)",
-                (str(uuid4()), session_id, "compaction", ujson.dumps({
+                (str(uuid4()), session_id, "compaction", json.dumps({
                     "type": "compaction",
                     "summary": summary,
                     "boundary_entry_id": boundary_entry_id,
