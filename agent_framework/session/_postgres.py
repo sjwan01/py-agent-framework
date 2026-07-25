@@ -90,14 +90,13 @@ class PostgresSessionManager(SessionManager):
         return sid
 
     async def load_history(self, session_id: str) -> list:
+        # TODO: 当前 load_history 只加载原 messages，没有把 compaction
+        # 摘要重新注入为 system prompt。这意味着长对话即使做过 compaction，
+        # 加载历史时仍然是原始（可能已超窗口）的消息列表。期望行为应该是
+        # 加载 baseline + compaction summary + 未被压缩的 recent messages。
         """按 turn_index 升序加载指定 session 的所有普通消息。
 
         psycopg 可能把 JSONB 返回为 Python dict 或字符串，由 _deserialize_pg_message 统一处理。
-
-        TODO: 当前 load_history 只加载原 messages，没有把 compaction
-        摘要重新注入为 system prompt。这意味着长对话即使做过 compaction，
-        加载历史时仍然是原始（可能已超窗口）的消息列表。期望行为应该是
-        加载 baseline + compaction summary + 未被压缩的 recent messages。
         """
         pool = await self._get_pool()
         async with pool.connection() as conn:
