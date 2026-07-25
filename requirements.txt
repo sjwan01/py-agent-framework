@@ -1,5 +1,5 @@
 pydantic==2.13.4
-pydantic-ai[openai]==2.16.0
+pydantic-ai-slim[openai]==2.16.0
 pydantic-ai-harness==0.10.0
 pydantic-settings==2.14.2
 python-dotenv==1.2.2

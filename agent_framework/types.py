@@ -59,6 +59,36 @@ class ToolSource(ABC):
 
 
 # ── Event enums ───────────────────────────────────────────────────────
+#
+# ToolLifecycleEvent 发生在工具注册阶段（AgentRunner 初始化 ToolLifecycle 时）：
+#
+#   _ensure_tool_lifecycle()
+#   ├── register_tool_sources / add_source
+#   │   ├── TOOL_DISCOVERED   # 工具源发现工具
+#   │   ├── TOOL_CONFLICT     # 同名工具冲突
+#   │   └── TOOL_REGISTERED   # 冲突解决后正式注册
+#   └── TOOL_REMOVED          # 被去重/冲突解决淘汰的工具
+#
+# AgentRunnerEvent 发生在单次 run() / run_stream() 运行时：
+#
+#   run() / run_stream()
+#   ├── SESSION_START
+#   ├── load_history
+#   ├── CONTEXT_PREPARE       # ContextManager 先执行，Extension 可改 messages
+#   ├── BEFORE_AGENT_RUN      # Extension 最后改 messages 的机会
+#   ├── AGENT_RUN             # 携带 {prompt, messages}
+#   │   ├── (Pydantic AI tool loop)
+#   │   │   ├── AGENT_RUN / event=on_tool_start
+#   │   │   ├── TOOL_CALL
+#   │   │   ├── AGENT_RUN / event=on_tool_end
+#   │   │   └── TOOL_RESULT
+#   │   └── AGENT_RUN / event=on_chat_model_stream   # 每个 token chunk
+#   ├── AFTER_AGENT_RUN
+#   ├── SESSION_SAVE
+#   ├── COMPACTION_TRIGGER    # 若 ContextManager 标记得 compaction
+#   │   └── COMPACTION_APPLIED
+#   └── SESSION_END
+#
 
 class ToolLifecycleEvent(StrEnum):
     TOOL_DISCOVERED = "tool_discovered"
