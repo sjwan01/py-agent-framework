@@ -185,22 +185,6 @@ class LocalSessionManager(SessionManager):
             )
             await db.commit()
 
-    # ── 运维 ────────────────────────────────────────────────────
-
-    async def cleanup_stale_sessions(self, timeout_seconds: int | None = None) -> int:
-        """删除超过 ``timeout_seconds`` 秒未活跃的 session（默认 1 天）。
-
-        只删 sessions 表的行；messages 表通过外键 CASCADE ？当前 schema
-        没有 CASCADE，后续如有需要可以加。
-        """
-        timeout = timeout_seconds if timeout_seconds is not None else 86400
-        async with self._connect() as db:
-            cursor = await db.execute(
-                "DELETE FROM sessions WHERE created_at < datetime('now', '-{} seconds')".format(timeout),
-            )
-            await db.commit()
-            return cursor.rowcount
-
 
 # ── 角色推断 ──────────────────────────────────────────────────────────
 # 根据消息类型和 parts 内容判断消息的角色，写入 DB 的 role 列。

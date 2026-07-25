@@ -156,22 +156,6 @@ class PostgresSessionManager(SessionManager):
                 })),
             )
 
-    # ── 运维 ────────────────────────────────────────────────────
-
-    async def cleanup_stale_sessions(self, timeout_seconds: int | None = None) -> int:
-        """删除超过 ``timeout_seconds`` 秒未活跃的 session（默认 1 天）。
-
-        用 PostgreSQL 的 make_interval 函数计算过期时间。
-        """
-        timeout = timeout_seconds if timeout_seconds is not None else 86400
-        pool = await self._get_pool()
-        async with pool.connection() as conn:
-            cursor = await conn.execute(
-                "DELETE FROM sessions WHERE created_at < now() - make_interval(secs => %s)",
-                (timeout,),
-            )
-            return cursor.rowcount
-
     async def close(self) -> None:
         """关闭连接池，释放所有连接。
 
