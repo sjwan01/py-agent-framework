@@ -39,10 +39,10 @@ class Settings(BaseSettings):
     parallel_tool_calls: bool = False
 
     # Compaction summarizer
-    # TODO: compaction 模型缺少独立配置（thinking、base_url、api_key）。
-    #       虽然已有 compaction_model_id，但底下的 HarnessSummarizer 硬编码
-    #       了 prompts 和模型构造，其余参数一概不可调。
-    #       理想情况下，compaction 模型应与主模型完全解耦，可独立配置
-    #       thinking、token 上限、provider 等。
+    # TODO: compaction 模型缺少独立 provider 配置。
+    #       虽然有 compaction_model_id + max_output_tokens，但 base_url /
+    #       api_key 复用主模型的，prompts 硬编码在 HarnessSummarizer 里，
+    #       thinking 等级不可配置。理想：compaction 模型与主模型完全解耦，
+    #       可独立指定 provider、thinking、prompt 模板等。
     compaction_model_id: str | None = None
     compaction_max_output_tokens: int | None = None
