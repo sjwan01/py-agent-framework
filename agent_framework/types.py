@@ -23,6 +23,8 @@ class SessionManager(ABC):
     async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None: ...
     @abstractmethod
     async def get_max_message_seq(self, session_id: str) -> int: ...
+    @abstractmethod
+    async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str: ...
 
 
 # ── CompactionSummarizer ──────────────────────────────────────────────
@@ -67,6 +69,16 @@ class ToolSource(ABC):
     def scope(self) -> str:
         """Visibility scope for this source. Defaults to global ('all')."""
         return "all"
+
+
+# ── Data enums ───────────────────────────────────────────────────────
+
+class MessageRole(StrEnum):
+    """消息角色枚举，统一 DB schema 与 _infer_role 中的角色值。"""
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+    UNKNOWN = "unknown"
 
 
 # ── Event enums ───────────────────────────────────────────────────────
@@ -134,6 +146,7 @@ __all__ = [
     "CompactionSummarizer",
     "Extension",
     "ToolSource",
+    "MessageRole",
     "ToolLifecycleEvent",
     "AgentRunnerEvent",
     "ToolEventHandler",

@@ -89,6 +89,16 @@ class LocalSessionManager(SessionManager):
             await db.commit()
         return sid
 
+    async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str:
+        """确保 session 行存在：不存在则创建，存在则无操作。"""
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT OR IGNORE INTO sessions (session_id, metadata) VALUES (?, ?)",
+                (session_id, json.dumps(metadata or {})),
+            )
+            await db.commit()
+        return session_id
+
     async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
         """加载 session 消息。
 

@@ -71,12 +71,10 @@ class AgentRunner:
 
         Returns ``(session_id, history, original_history, needs_compaction)``.
         """
-        # TODO: session_id 可能由上游传入。若该 session 在 DB 中不存在，
-        #       当前实现会直接 load_history（返回空列表），但不会在 sessions 表
-        #       里创建 session 行，导致后续 save_messages 因外键约束失败。
-        #       应增加 "get_or_create_session" 语义：不存在则创建，存在则加载历史。
         if session_id is None:
             session_id = await self._session_manager.create_session()
+        else:
+            await self._session_manager.ensure_session(session_id)
 
         await self._fire(AgentRunnerEvent.SESSION_START, {"session_id": session_id})
 

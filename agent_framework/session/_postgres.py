@@ -100,6 +100,16 @@ class PostgresSessionManager(SessionManager):
             )
         return sid
 
+    async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str:
+        """确保 session 行存在：不存在则创建，存在则无操作。"""
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO sessions (session_id, metadata) VALUES (%s, %s) ON CONFLICT (session_id) DO NOTHING",
+                (session_id, json.dumps(metadata or {})),
+            )
+        return session_id
+
     async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
         """加载 session 消息。
 

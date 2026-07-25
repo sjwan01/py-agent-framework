@@ -16,6 +16,10 @@ class SingleTurnSessionManager(SessionManager):
         # 生成一个 UUID 作为 session_id，但不落盘。
         return str(uuid4())
 
+    async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str:
+        # 单轮模式不持久化，无需创建 session 行。
+        return session_id
+
     async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
         # 没有历史，永远返回空。
         return []
