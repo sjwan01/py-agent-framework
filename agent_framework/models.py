@@ -38,7 +38,7 @@ class PreparedContext(BaseModel):
     # 是否因超过高水位线而需要触发 compaction。
     needs_compaction: bool = False
 
-    # ContextManager 处理后的估算 token 数。
+    # 截断/清理后进入 Agent 的消息的估算 token 占用（chars ÷ 4 粗略估算）。
     tokens_used: int = 0
 
 
