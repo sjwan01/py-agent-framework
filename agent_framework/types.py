@@ -69,23 +69,24 @@ class ToolSource(ABC):
 #   │   └── TOOL_REGISTERED   # 冲突解决后正式注册
 #   └── TOOL_REMOVED          # 被去重/冲突解决淘汰的工具
 #
-# AgentRunnerEvent 发生在单次 run() / run_stream() 运行时：
+# AgentRunnerEvent 发生在单次 run() / run_stream() 运行时。
+# TODO: 当前实现与下图不一致；下图是目标设计，尚未替换代码。
 #
 #   run() / run_stream()
 #   ├── SESSION_START
 #   ├── load_history
-#   ├── CONTEXT_PREPARE       # ContextManager 先执行，Extension 可改 messages
-#   ├── BEFORE_AGENT_RUN      # Extension 最后改 messages 的机会
-#   ├── AGENT_RUN             # 携带 {prompt, messages}
+#   ├── CONTEXT_PREPARE          # 只读：Extension 观察 ContextManager 输出
+#   ├── BEFORE_AGENT_RUN         # 可写：Extension 改 messages 的唯一入口
+#   ├── AGENT_START              # 只读：prompt + 最终进入 Agent 的 messages
 #   │   ├── (Pydantic AI tool loop)
-#   │   │   ├── AGENT_RUN / event=on_tool_start
-#   │   │   ├── TOOL_CALL
-#   │   │   ├── AGENT_RUN / event=on_tool_end
-#   │   │   └── TOOL_RESULT
-#   │   └── AGENT_RUN / event=on_chat_model_stream   # 每个 token chunk
-#   ├── AFTER_AGENT_RUN
-#   ├── SESSION_SAVE
-#   ├── COMPACTION_TRIGGER    # 若 ContextManager 标记得 compaction
+#   │   │   ├── TOOL_START       # 日志/UI
+#   │   │   ├── TOOL_CALL        # 拦截：block / 改 args
+#   │   │   ├── TOOL_RESULT      # 拦截：改结果
+#   │   │   └── TOOL_END         # 日志/UI
+#   │   └── TOKEN_STREAM         # run_stream 时每个 token chunk
+#   ├── AGENT_END                # 只读：output + usage
+#   ├── SESSION_SAVE             # 可写：保存前改 delta_messages
+#   ├── COMPACTION_TRIGGER       # 若 ContextManager 标记得 compaction；可 cancel
 #   │   └── COMPACTION_APPLIED
 #   └── SESSION_END
 #
