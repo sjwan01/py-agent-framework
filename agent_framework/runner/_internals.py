@@ -20,6 +20,9 @@ def build_model(self):
     provider construction so deployments with local/vLLM endpoints work out
     of the box.
     """
+    # TODO: 当前硬编码为 OpenAIProvider。当 settings.llm_base_url 是 DeepSeek
+    #       官方 API URL（或设置了明确的 provider 类型）时，应切换为对应的
+    #       DeepSeek provider，而不是继续用 OpenAI 兼容模式。
     if self._model is not None:
         return self._model
     return OpenAIChatModel(
