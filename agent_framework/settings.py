@@ -42,7 +42,6 @@ class Settings(BaseSettings):
     # TODO: compaction 模型缺少独立 provider 配置。
     #       虽然有 compaction_model_id + max_output_tokens，但 base_url /
     #       api_key 复用主模型的，prompts 硬编码在 HarnessSummarizer 里，
-    #       thinking 等级不可配置。理想：compaction 模型与主模型完全解耦，
-    #       可独立指定 provider、thinking、prompt 模板等。
+    #       thinking 等级不可配置。
     compaction_model_id: str | None = None
     compaction_max_output_tokens: int | None = None
