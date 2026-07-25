@@ -7,61 +7,47 @@ from pydantic import BaseModel, Field
 
 
 class AgentConfig(BaseModel):
-    instructions: str = Field(
-        default="",
-        description="System prompt / instructions injected into every Agent turn.",
-    )
-    hooks: Any = Field(
-        default=None,
-        description="Optional pydantic_ai.capabilities.Hooks instance.",
-    )
-    capabilities: list[Any] = Field(
-        default_factory=list,
-        description="Additional Pydantic AI capabilities or toolsets.",
-    )
+    # 每轮注入 Agent 的 system prompt / instructions。
+    instructions: str = ""
+
+    # 可选的 pydantic_ai.capabilities.Hooks 实例。
+    hooks: Any = None
+
+    # 额外的 Pydantic AI capability 或 toolset。
+    capabilities: list[Any] = Field(default_factory=list)
 
 
 class RunResult(BaseModel):
-    output: str = Field(
-        description="Assembled text output of the agent run.",
-    )
-    session_id: str = Field(
-        description="Session identifier that survives across turns.",
-    )
-    new_messages: list[Any] = Field(
-        description="Messages *newly produced* in this turn (delta from saved history).",
-    )
-    usage: Any | None = Field(
-        default=None,
-        description="Pydantic AI usage statistics (input/output tokens, tool calls, etc.).",
-    )
+    # Agent 运行后拼装好的文本输出。
+    output: str
+
+    # 跨轮次存活的 session 标识。
+    session_id: str
+
+    # 本轮新产生的消息（相对于 DB 中已有历史的增量）。
+    new_messages: list[Any]
+
+    # Pydantic AI 用量统计（input/output token、tool 调用次数等）。
+    usage: Any | None = None
 
 
 class PreparedContext(BaseModel):
-    messages: list[Any] = Field(
-        default_factory=list,
-        description="Messages ready to be fed into the Agent as message_history.",
-    )
-    needs_compaction: bool = Field(
-        default=False,
-        description="True when estimated tokens exceed the high watermark.",
-    )
-    tokens_used: int = Field(
-        default=0,
-        description="Estimated token count after ContextManager processing.",
-    )
+    # 准备好传入 Agent.message_history 的消息列表。
+    messages: list[Any] = Field(default_factory=list)
+
+    # 是否因超过高水位线而需要触发 compaction。
+    needs_compaction: bool = False
+
+    # ContextManager 处理后的估算 token 数。
+    tokens_used: int = 0
 
 
 class BaselineState(BaseModel):
-    skills: dict[str, str] = Field(
-        default_factory=dict,
-        description="Frozen snapshot of skill name → description at baseline time.",
-    )
-    tools: dict[str, str] = Field(
-        default_factory=dict,
-        description="Frozen snapshot of tool name → description at baseline time.",
-    )
-    context: list[str] = Field(
-        default_factory=list,
-        description="Frozen snapshot of additional context entries (paths, identifiers, etc.).",
-    )
+    # 基线时刻的 skill 名 → description 快照。
+    skills: dict[str, str] = Field(default_factory=dict)
+
+    # 基线时刻的 tool 名 → description 快照。
+    tools: dict[str, str] = Field(default_factory=dict)
+
+    # 基线时刻的额外上下文条目（路径、标识等）。
+    context: list[str] = Field(default_factory=list)
