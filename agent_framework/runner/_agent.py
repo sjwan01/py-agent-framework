@@ -13,49 +13,30 @@ from agent_framework.models import AgentConfig, RunResult, BaselineState
 from agent_framework.settings import Settings
 from agent_framework.types import SessionManager, AgentRunnerEvent
 
-from agent_framework.runner._factory import (
-    default_context_manager,
-    default_compaction_summarizer,
-    default_session_manager,
-    discover_extensions,
-    ensure_tool_lifecycle,
-    trigger_compaction,
-)
-from agent_framework.runner._hooks import build_hooks
-from agent_framework.runner._internals import (
-    boundary_id,
-    build_capabilities,
-    build_model,
-    drain_pending,
-    fire,
-    fire_notify,
-    get_tools,
-    messages_to_persist,
-    notify_streamers,
-)
+from agent_framework.runner import _factory, _hooks, _internals
 
 
 class AgentRunner:
     """Orchestrates load → build → run → save."""
 
     # --- Delegated to sub-modules -------------------------------------------------
-    _build_hooks = build_hooks
-    _build_model = build_model
-    _messages_to_persist = staticmethod(messages_to_persist)
-    _notify_streamers = staticmethod(notify_streamers)
-    _drain_pending = staticmethod(drain_pending)
-    _build_capabilities = build_capabilities
-    _fire = fire
-    _fire_notify = fire_notify
-    _boundary_id = staticmethod(boundary_id)
-    _get_tools = get_tools
+    _build_hooks = _hooks.build_hooks
+    _build_model = _internals.build_model
+    _messages_to_persist = staticmethod(_internals.messages_to_persist)
+    _notify_streamers = staticmethod(_internals.notify_streamers)
+    _drain_pending = staticmethod(_internals.drain_pending)
+    _build_capabilities = _internals.build_capabilities
+    _fire = _internals.fire
+    _fire_notify = _internals.fire_notify
+    _boundary_id = staticmethod(_internals.boundary_id)
+    _get_tools = _internals.get_tools
 
-    _default_session_manager = default_session_manager
-    _default_context_manager = default_context_manager
-    _default_compaction_summarizer = default_compaction_summarizer
-    _ensure_tool_lifecycle = ensure_tool_lifecycle
-    _trigger_compaction = trigger_compaction
-    discover_extensions = staticmethod(discover_extensions)
+    _default_session_manager = _factory.default_session_manager
+    _default_context_manager = _factory.default_context_manager
+    _default_compaction_summarizer = _factory.default_compaction_summarizer
+    _ensure_tool_lifecycle = _factory.ensure_tool_lifecycle
+    _trigger_compaction = _factory.trigger_compaction
+    discover_extensions = staticmethod(_factory.discover_extensions)
 
     def __init__(
         self,
