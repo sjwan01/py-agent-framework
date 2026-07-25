@@ -8,6 +8,10 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 _MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)
 
 
+# TODO: role 当前是手写字符串（"user"/"assistant"/"tool"/"compaction"），
+#       容易打错、不方便静态检查。应改为 StrEnum，并在 DB schema 与 _infer_role
+#       中统一使用。
+
 def _infer_role(msg) -> str:
     """根据消息类型和第一个 part 推断角色，写入 DB 的 role 列。
 

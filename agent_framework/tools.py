@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import inspect
+# TODO: 移除 logging。Agent 框架层不应包含业务无关的日志输出；
+#       异常应直接抛出或交给上层/Extension 处理。
 import logging
 from typing import Any
 

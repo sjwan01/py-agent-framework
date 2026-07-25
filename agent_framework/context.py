@@ -32,6 +32,11 @@ class ContextManager:
     async def prepare(
         self, messages: list, *, system_prompt: str, current_state: BaselineState,
     ) -> PreparedContext:
+        # TODO: prepare 内部多次遍历 messages（估算、找 boundary、截断、再估算）。
+        #       当历史很长时这是 O(n) 甚至 O(n*m) 的开销。可考虑：
+        #       1) 单次遍历同时完成估算、boundary 标记和截断；
+        #       2) 使用增量/缓存结构避免每轮重新扫描全部历史。
+
         # Work on a copy so the caller's list is not mutated and prepare is idempotent.
         messages = list(messages)
 
@@ -168,6 +173,9 @@ def _truncate_old_tool_results(messages: list, boundary: int, max_chars: int) ->
 
 
 def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
+    # TODO: diff 消息只列了 skill/tool 名称，没显示 description，也没处理
+    #       工具/技能被删除的情况。pi-agent 的 diff 消息会包含描述，并明确
+    #       标出 Removed/Added/Updated。应改为结构化 diff，包含描述和删除事件。
     lines = []
     for name, desc in current.skills.items():
         if name not in baseline.skills:
