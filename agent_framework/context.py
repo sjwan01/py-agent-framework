@@ -1,6 +1,7 @@
 """ContextManager — watermark truncation and baseline freezing."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
@@ -131,8 +132,6 @@ def _truncate_old_tool_results(messages: list, boundary: int, max_chars: int) ->
     不修改原始 messages。只有精确的 ``ToolReturnPart``（非子类）
     且 content 是字符串且长度超过 max_chars 才会被截断。
     """
-    from dataclasses import replace
-
     out: list = []
     for i, msg in enumerate(messages):
         # 不是 ModelRequest 或在保护范围内的消息直接保留，不动。
