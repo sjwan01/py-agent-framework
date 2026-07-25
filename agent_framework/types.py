@@ -71,6 +71,7 @@ class ToolSource(ABC):
 #
 # AgentRunnerEvent 发生在单次 run() / run_stream() 运行时。
 # TODO: 当前实现与下图不一致；下图是目标设计，尚未替换代码。
+# 来龙去脉见 .scratch/notes/agentrunnerevent-todo.md（本地文件，不提交）。
 #
 #   run() / run_stream()
 #   ├── SESSION_START
