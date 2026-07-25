@@ -67,63 +67,104 @@ class ContextManager:
         return _find_turn_boundary(messages, self._protect)
 
 
+# ── token 估算 ────────────────────────────────────────────────────────
+# 把消息列表里所有文本内容的字符数加起来，除以 4 作为 token 估算。
+# 这是一个非常粗糙的启发式方法（~4 chars/token），
+# 准确 token 计数需要 tiktoken 或类似分词器。
+
 def _default_estimate(messages: list) -> int:
-    """Default token estimator: characters // 4."""
+    """粗略 token 估算：所有文本字符总数 ÷ 4，最少返回 1。"""
     total = 0
+    # 遍历每条消息的每个 part，只统计字符串类型的 content。
     for msg in messages:
         for part in getattr(msg, "parts", ()):
             content = getattr(part, "content", None)
             if isinstance(content, str):
                 total += len(content)
+    # 至少返回 1，避免下游除以 0 之类的边界情况。
     return max(total // 4, 1)
 
 
+# ── turn 边界查找 ─────────────────────────────────────────────────────
+# 从消息列表末尾往前数 protect 个用户 turn，返回被保护范围之外的
+# 第一个消息索引。这个索引之前的消息是"旧消息"，可以被截断或压缩。
+
 def _find_turn_boundary(messages: list, protect: int) -> int:
+    """从后往前找到第 protect 个用户 turn 的起始位置。
+
+    返回值是保护范围之外的第一条消息的索引：
+    - messages[boundary:] → 受保护的最近 protect 个 turn
+    - messages[:boundary] → 可以被截断/压缩的旧消息
+    """
     turns = 0
+    # 从列表末尾往前扫描，每次遇到用户 turn 开头就计数 +1。
     for i in range(len(messages) - 1, -1, -1):
         if _is_turn_start(messages[i]):
             turns += 1
+            # 数够了 protect 个 turn，返回当前位置作为"保护边界"。
             if turns >= protect:
                 return i
+    # 消息总数少于 protect 个 turn，返回 0 表示全部保护。
     return 0
 
 
 def _is_turn_start(msg) -> bool:
+    """判断一条消息是不是用户 turn 的起点。
+
+    规则：ModelRequest 且第一个 part 是 UserPromptPart。
+    这约等于"用户发了一条新消息"。
+    """
     if isinstance(msg, ModelRequest):
+        # parts 非空 且 第一个 part 是 UserPromptPart。
         return bool(msg.parts) and isinstance(msg.parts[0], UserPromptPart)
     return False
 
 
-def _truncate_old_tool_results(messages: list, boundary: int, max_chars: int) -> list:
-    """Return a new list where old tool results are truncated to ``max_chars``.
+# ── 工具结果截断 ─────────────────────────────────────────────────────
+# 把 boundary 之前的旧 tool result 内容截断到 max_chars 个字符。
+# 只截普通的 ToolReturnPart，不动框架 typed 子类（如 ToolSearchReturnPart），
+# 避免破坏结构性数据。tool-call / tool-result 的配对关系保持不变。
 
-    Only plain ``ToolReturnPart`` instances are truncated; typed subclasses
-    (e.g. framework-typed returns) are left intact so their structured content
-    survives round-trips. Tool-call / tool-return pairing is preserved.
+def _truncate_old_tool_results(messages: list, boundary: int, max_chars: int) -> list:
+    """把 boundary 之前的 tool result 截断到 max_chars 字符，返回新列表。
+
+    不修改原始 messages。只有精确的 ``ToolReturnPart``（非子类）
+    且 content 是字符串且长度超过 max_chars 才会被截断。
     """
     from dataclasses import replace
 
     out: list = []
     for i, msg in enumerate(messages):
+        # 不是 ModelRequest 或在保护范围内的消息直接保留，不动。
         if not isinstance(msg, ModelRequest) or i >= boundary:
             out.append(msg)
             continue
+
+        # 遍历消息的 parts，检查是否有需要截断的 tool result。
         new_parts: list = []
         changed = False
         for part in msg.parts:
+            # 三个条件全部满足才截断：
+            #   1. type(part) is ToolReturnPart — 精确类型，不碰子类
+            #   2. content 是字符串
+            #   3. 长度超过 max_chars
             if (
                 type(part) is ToolReturnPart
                 and isinstance(part.content, str)
                 and len(part.content) > max_chars
             ):
+                # 用 replace 重建 part（不可变风格），保留前 max_chars 个字符。
                 new_parts.append(replace(part, content=part.content[:max_chars]))
                 changed = True
             else:
                 new_parts.append(part)
+
+        # 如果这个消息的 parts 有变化，用 replace 重建整个消息。
         if changed:
             out.append(replace(msg, parts=new_parts))
         else:
             out.append(msg)
+
     return out
 
 
