@@ -7,17 +7,19 @@ from uuid import uuid4
 import aiosqlite
 import json
 
-from agent_framework.session._shared import _infer_role, _MessageAdapter
+from agent_framework.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from agent_framework.types import SessionManager
+from pydantic_ai.messages import ModelRequest, UserPromptPart
+from datetime import datetime, timezone
 
 # ── SQLite 建表语句 ──────────────────────────────────────────────────
 # sessions 表：每个 session 一行，记录创建时间和自定义元数据。
-# messages 表：每条消息一行，按 (session_id, turn_index) 索引。
+# messages 表：每条消息一行，按 (session_id, message_seq) 索引。
 #   - entry_id：消息唯一标识，UUID。
-#   - turn_index：该消息属于第几轮对话（从 0 开始递增）。
-#   - role：消息角色，user / assistant / tool / compaction。
+#   - message_seq：消息顺序号（从 0 开始递增）。
+#   - role：消息角色，user / assistant / tool。
 #   - content：消息的 JSON 字符串（由 _MessageAdapter 序列化）。
-#   - compaction 记录用 turn_index = -1，与普通消息区分开。
+# compactions 表：每次压缩一条记录，用 boundary_seq 标记压缩覆盖范围。
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -28,14 +30,21 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
     entry_id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    turn_index INTEGER NOT NULL,
+    message_seq INTEGER NOT NULL,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     timestamp TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_session_turn
-    ON messages(session_id, turn_index);
+CREATE INDEX IF NOT EXISTS idx_messages_session_seq
+    ON messages(session_id, message_seq);
+
+CREATE TABLE IF NOT EXISTS compactions (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    boundary_seq INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 
@@ -43,7 +52,7 @@ class LocalSessionManager(SessionManager):
     """SQLite 持久化，适合本地开发和测试。
 
     每个 session 存在 ``sessions`` 表的一行，每条消息存在 ``messages`` 表的一行。
-    消息按 turn_index 排序加载，compaction 记录不会被加载进历史。
+    消息按 message_seq 排序加载，compaction 记录存在独立的 ``compactions`` 表。
     """
 
     def __init__(self, *, db_path: str):
@@ -80,63 +89,100 @@ class LocalSessionManager(SessionManager):
             await db.commit()
         return sid
 
-    async def load_history(self, session_id: str) -> list:
-        # TODO: 当前 load_history 只加载原 messages，没有把 compaction
-        # 摘要重新注入为 system prompt。这意味着长对话即使做过 compaction，
-        # 加载历史时仍然是原始（可能已超窗口）的消息列表。期望行为应该是
-        # 加载 baseline + compaction summary + 未被压缩的 recent messages。
-        """按 turn_index 升序加载指定 session 的所有普通消息。
+    async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
+        """加载 session 消息。
 
-        role='compaction' 的行被排除，因为这些是压缩摘要元数据，
-        不参与 Agent 的消息历史。
+        先查 compaction：若无记录则加载全部；若有且 boundary 后攒够 protect_turns
+        个 user turn，则只加载 seq > boundary 的消息并前置摘要。
         """
         async with self._connect() as db:
+            # 1. 先查最新 compaction
             cursor = await db.execute(
-                "SELECT content FROM messages WHERE session_id = ? AND role != 'compaction' ORDER BY turn_index",
+                "SELECT boundary_seq, summary FROM compactions WHERE session_id = ? ORDER BY boundary_seq DESC LIMIT 1",
                 (session_id,),
             )
-            rows = await cursor.fetchall()
-            # content 列存的是 JSON 字符串，通过 TypeAdapter 反序列化。
-            return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
+            comp_row = await cursor.fetchone()
+
+            if comp_row is None:
+                # 无 compaction → 加载全部
+                return await self._load_all_messages(db, session_id)
+
+            boundary_seq = comp_row["boundary_seq"]
+            summary = comp_row["summary"]
+
+            # 2. 只加载 boundary 之后的消息，数 user turn
+            recent = await self._load_messages_after(db, session_id, boundary_seq)
+            turns_after = sum(1 for m in recent if _is_turn_start(m))
+
+            if turns_after < protect_turns:
+                # 不足 protect_turns → 回退，加载全部
+                return await self._load_all_messages(db, session_id)
+
+            # 3. 启用 compaction：摘要 + boundary 后消息
+            ts = datetime.now(timezone.utc)
+            summary_msg = ModelRequest(
+                parts=[UserPromptPart(
+                    content=f"[Previous conversation summary]\n{summary}",
+                    timestamp=ts,
+                )],
+                kind="request",
+                timestamp=ts,
+            )
+            return [summary_msg] + recent
+
+    async def get_max_message_seq(self, session_id: str) -> int:
+        """返回当前 session 的最大 message_seq，无消息时返回 -1。"""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT COALESCE(MAX(message_seq), -1) FROM messages WHERE session_id = ?",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+            return row[0]
+
+    async def _load_all_messages(self, db, session_id: str) -> list:
+        cursor = await db.execute(
+            "SELECT content FROM messages WHERE session_id = ? ORDER BY message_seq",
+            (session_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
+
+    async def _load_messages_after(self, db, session_id: str, boundary_seq: int) -> list:
+        cursor = await db.execute(
+            "SELECT content FROM messages WHERE session_id = ? AND message_seq > ? ORDER BY message_seq",
+            (session_id, boundary_seq),
+        )
+        rows = await cursor.fetchall()
+        return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
         """把一批新消息（本轮 delta）追加到 messages 表。
 
-        每条消息的 turn_index 从当前最大值 +1 开始。
+        每条消息的 message_seq 从当前最大值 +1 开始。
         """
         async with self._connect() as db:
-            # 算出本 session 当前最大的 turn_index，新消息从下一个 turn 开始写。
             cursor = await db.execute(
-                "SELECT COALESCE(MAX(turn_index), -1) + 1 AS next_turn FROM messages WHERE session_id = ?",
+                "SELECT COALESCE(MAX(message_seq), -1) + 1 AS next_seq FROM messages WHERE session_id = ?",
                 (session_id,),
             )
             row = await cursor.fetchone()
-            turn = row["next_turn"]
+            seq = row["next_seq"]
             for msg in messages:
-                # 推断消息角色，写入 role 列（用于后续过滤和可读性）。
                 role = _infer_role(msg)
-                # 用 Pydantic TypeAdapter 把消息序列化为 JSON 字符串。
                 content = _MessageAdapter.dump_json(msg).decode()
                 await db.execute(
-                    "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, ?, ?, ?)",
-                    (str(uuid4()), session_id, turn, role, content),
+                    "INSERT INTO messages (entry_id, session_id, message_seq, role, content) VALUES (?, ?, ?, ?, ?)",
+                    (str(uuid4()), session_id, seq, role, content),
                 )
-                turn += 1
+                seq += 1
             await db.commit()
 
-    async def apply_compaction(self, session_id: str, summary: str, boundary_entry_id: str) -> None:
-        """把 compaction 摘要存为一条特殊记录。
-
-        这条记录的 role='compaction'，turn_index=-1，不会被 load_history 加载，
-        只用于审计/诊断，不参与 Agent 的上下文。
-        """
+    async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None:
+        """写入 compaction 记录到独立的 compactions 表。"""
         async with self._connect() as db:
             await db.execute(
-                "INSERT INTO messages (entry_id, session_id, turn_index, role, content) VALUES (?, ?, -1, ?, ?)",
-                (str(uuid4()), session_id, "compaction", json.dumps({
-                    "type": "compaction",
-                    "summary": summary,
-                    "boundary_entry_id": boundary_entry_id,
-                })),
+                "INSERT INTO compactions (session_id, boundary_seq, summary) VALUES (?, ?, ?)",
+                (session_id, boundary_seq, summary),
             )
             await db.commit()

@@ -10,10 +10,9 @@ from collections.abc import AsyncIterator
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
 
-from agent_framework.compaction import CompactionSummarizer
 from agent_framework.models import AgentConfig, RunResult, BaselineState
 from agent_framework.settings import Settings
-from agent_framework.types import SessionManager, AgentRunnerEvent
+from agent_framework.types import CompactionSummarizer, SessionManager, AgentRunnerEvent
 
 from agent_framework.runner import _factory, _hooks, _internals
 
@@ -30,7 +29,6 @@ class AgentRunner:
     _build_capabilities = _internals.build_capabilities
     _fire = _internals.fire
     _fire_notify = _internals.fire_notify
-    _boundary_id = staticmethod(_internals.boundary_id)
     _get_tools = _internals.get_tools
 
     _default_session_manager = _factory.default_session_manager
@@ -85,7 +83,9 @@ class AgentRunner:
         if self._context_manager is None:
             raise RuntimeError("ContextManager is not configured")
 
-        history = await self._session_manager.load_history(session_id)
+        history = await self._session_manager.load_history(
+            session_id, protect_turns=self._settings.protect_turns
+        )
         original_history = list(history)
 
         needs_compaction = False

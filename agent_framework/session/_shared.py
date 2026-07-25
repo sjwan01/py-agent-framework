@@ -1,14 +1,14 @@
-"""Session shared utilities — roles, serialization, no public API."""
+"""Session shared utilities — roles, serialization, turn detection."""
 from __future__ import annotations
 
 from pydantic import TypeAdapter
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
 
-# DB 按“每行一条消息”存储，不是整个消息列表，所以用单消息 TypeAdapter。
+# DB 按"每行一条消息"存储，不是整个消息列表，所以用单消息 TypeAdapter。
 _MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)
 
 
-# TODO: role 当前是手写字符串（"user"/"assistant"/"tool"/"compaction"），
+# TODO: role 当前是手写字符串（"user"/"assistant"/"tool"），
 #       容易打错、不方便静态检查。应改为 StrEnum，并在 DB schema 与 _infer_role
 #       中统一使用。
 
@@ -27,3 +27,14 @@ def _infer_role(msg) -> str:
     if isinstance(msg, ModelResponse):
         return "assistant"
     return "unknown"
+
+
+def _is_turn_start(msg) -> bool:
+    """判断一条消息是不是用户 turn 的起点。
+
+    规则：ModelRequest 且第一个 part 是 UserPromptPart。
+    这约等于"用户发了一条新消息"。
+    """
+    if isinstance(msg, ModelRequest):
+        return bool(msg.parts) and isinstance(msg.parts[0], UserPromptPart)
+    return False

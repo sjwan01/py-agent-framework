@@ -1,9 +1,6 @@
 """Context compaction summarizers."""
 from __future__ import annotations
 
-# TODO: CompactionSummarizer 这个接口应该移到 agent_framework.types.py，
-#       与 SessionManager、Extension 等其他 seams 放在一起，而不是藏在业务实现里。
-from abc import ABC, abstractmethod
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -11,17 +8,8 @@ from pydantic_ai.messages import ModelRequest, SystemPromptPart
 from pydantic_ai.usage import RunUsage
 from pydantic_ai_harness.compaction import SummarizingCompaction
 
-from agent_framework.models import BaselineState
 from agent_framework.settings import Settings
-
-
-class CompactionSummarizer(ABC):
-    """Abstract summarizer used by AgentRunner to compact old context."""
-
-    @abstractmethod
-    # TODO: baseline_state 参数当前没有实现，summarize 实现里完全没用到它。
-    #       要么真正利用 baseline_state 生成带 baseline diff 的摘要，要么移除该参数。
-    async def summarize(self, messages: list, baseline_state: BaselineState) -> str: ...
+from agent_framework.types import CompactionSummarizer
 
 
 class HarnessSummarizer(CompactionSummarizer):
@@ -51,8 +39,7 @@ class HarnessSummarizer(CompactionSummarizer):
             ),
         )
 
-    async def summarize(self, messages: list, baseline_state: BaselineState) -> str:
-        # TODO: baseline_state 参数未被使用。见 CompactionSummarizer 的 TODO。
+    async def summarize(self, messages: list) -> str:
         ctx = cast(Any, SimpleNamespace(usage=RunUsage()))
         compacted = await self._strategy.compact(messages, ctx)
         for msg in compacted:

@@ -150,14 +150,6 @@ async def fire_notify(
     return {cancel_key: cancelled}
 
 
-def boundary_id(messages: list, boundary: int) -> str:
-    """Return a stable id for the compaction boundary."""
-    if boundary > 0 and boundary <= len(messages):
-        msg = messages[boundary - 1]
-        return getattr(msg, "run_id", None) or f"msg-{boundary - 1}"
-    return f"msg-{boundary}"
-
-
 async def get_tools(self) -> list:
     lifecycle = await self._ensure_tool_lifecycle()
     if lifecycle is not None:

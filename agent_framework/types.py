@@ -16,11 +16,22 @@ class SessionManager(ABC):
     @abstractmethod
     async def create_session(self, *, metadata: dict | None = None) -> str: ...
     @abstractmethod
-    async def load_history(self, session_id: str) -> list: ...
+    async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list: ...
     @abstractmethod
     async def save_messages(self, session_id: str, messages: list) -> None: ...
     @abstractmethod
-    async def apply_compaction(self, session_id: str, summary: str, boundary_entry_id: str) -> None: ...
+    async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None: ...
+    @abstractmethod
+    async def get_max_message_seq(self, session_id: str) -> int: ...
+
+
+# ── CompactionSummarizer ──────────────────────────────────────────────
+
+class CompactionSummarizer(ABC):
+    """Abstract summarizer used by AgentRunner to compact old context."""
+
+    @abstractmethod
+    async def summarize(self, messages: list) -> str: ...
 
 
 # ── Extension Protocol ────────────────────────────────────────────────
@@ -116,3 +127,14 @@ class AgentRunnerEvent(StrEnum):
 # ── Event handler type ────────────────────────────────────────────────
 
 ToolEventHandler = Callable[[str, dict], Awaitable[dict | None]]
+
+
+__all__ = [
+    "SessionManager",
+    "CompactionSummarizer",
+    "Extension",
+    "ToolSource",
+    "ToolLifecycleEvent",
+    "AgentRunnerEvent",
+    "ToolEventHandler",
+]

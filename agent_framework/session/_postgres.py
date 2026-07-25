@@ -6,15 +6,19 @@ from uuid import uuid4
 import json
 from psycopg_pool import AsyncConnectionPool
 
-from agent_framework.session._shared import _infer_role, _MessageAdapter
+from agent_framework.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from agent_framework.types import SessionManager
+from pydantic_ai.messages import ModelRequest, UserPromptPart
+from datetime import datetime, timezone
+
 
 # ── PostgreSQL 建表语句 ──────────────────────────────────────────────
 # sessions 表：每个 session 一行，metadata 用 JSONB。
 # messages 表：每条消息一行。
 #   - entry_id 用 gen_random_uuid() 自动生成。
 #   - content 用 JSONB，psycopg 在 Python dict 和 JSONB 之间自动转换。
-#   - 索引按 (session_id, turn_index)。
+#   - 索引按 (session_id, message_seq)。
+# compactions 表：每次压缩一条记录，用 boundary_seq 标记压缩覆盖范围。
 PG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -25,14 +29,21 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS messages (
     entry_id TEXT PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
-    turn_index INT NOT NULL,
+    message_seq INT NOT NULL,
     role TEXT NOT NULL,
     content JSONB NOT NULL,
     timestamp TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_session_turn_pg
-    ON messages(session_id, turn_index);
+CREATE INDEX IF NOT EXISTS idx_messages_session_seq_pg
+    ON messages(session_id, message_seq);
+
+CREATE TABLE IF NOT EXISTS compactions (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    boundary_seq INTEGER NOT NULL,
+    summary TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
 """
 
 
@@ -89,56 +100,100 @@ class PostgresSessionManager(SessionManager):
             )
         return sid
 
-    async def load_history(self, session_id: str) -> list:
-        # TODO: 当前 load_history 只加载原 messages，没有把 compaction
-        # 摘要重新注入为 system prompt。这意味着长对话即使做过 compaction，
-        # 加载历史时仍然是原始（可能已超窗口）的消息列表。期望行为应该是
-        # 加载 baseline + compaction summary + 未被压缩的 recent messages。
-        """按 turn_index 升序加载指定 session 的所有普通消息。
+    async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
+        """加载 session 消息。
 
-        psycopg 可能把 JSONB 返回为 Python dict 或字符串，由 _deserialize_pg_message 统一处理。
+        先查 compaction：若无记录则加载全部；若有且 boundary 后攒够 protect_turns
+        个 user turn，则只加载 seq > boundary 的消息并前置摘要。
         """
         pool = await self._get_pool()
         async with pool.connection() as conn:
+            # 1. 先查最新 compaction
             cursor = await conn.execute(
-                "SELECT content FROM messages WHERE session_id = %s AND role != 'compaction' ORDER BY turn_index",
+                "SELECT boundary_seq, summary FROM compactions WHERE session_id = %s ORDER BY boundary_seq DESC LIMIT 1",
                 (session_id,),
             )
-            rows = await cursor.fetchall()
+            comp_row = await cursor.fetchone()
+
+            if comp_row is None:
+                return await self._load_all_messages(conn, session_id)
+
+            boundary_seq = comp_row[0]
+            summary = comp_row[1]
+
+            # 2. 只加载 boundary 之后的消息，数 user turn
+            recent = await self._load_messages_after(conn, session_id, boundary_seq)
+            turns_after = sum(1 for m in recent if _is_turn_start(m))
+
+            if turns_after < protect_turns:
+                return await self._load_all_messages(conn, session_id)
+
+            # 3. 启用 compaction：摘要 + boundary 后消息
+            ts = datetime.now(timezone.utc)
+            summary_msg = ModelRequest(
+                parts=[UserPromptPart(
+                    content=f"[Previous conversation summary]\n{summary}",
+                    timestamp=ts,
+                )],
+                kind="request",
+                timestamp=ts,
+            )
+            return [summary_msg] + recent
+
+    async def get_max_message_seq(self, session_id: str) -> int:
+        """返回当前 session 的最大 message_seq，无消息时返回 -1。"""
+        pool = await self._get_pool()
+        async with pool.connection() as conn:
+            cursor = await conn.execute(
+                "SELECT COALESCE(MAX(message_seq), -1) FROM messages WHERE session_id = %s",
+                (session_id,),
+            )
+            return (await cursor.fetchone())[0]
+
+    async def _load_all_messages(self, conn, session_id: str) -> list:
+        cursor = await conn.execute(
+            "SELECT content FROM messages WHERE session_id = %s ORDER BY message_seq",
+            (session_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_deserialize_pg_message(row[0]) for row in rows]
+
+    async def _load_messages_after(self, conn, session_id: str, boundary_seq: int) -> list:
+        cursor = await conn.execute(
+            "SELECT content FROM messages WHERE session_id = %s AND message_seq > %s ORDER BY message_seq",
+            (session_id, boundary_seq),
+        )
+        rows = await cursor.fetchall()
         return [_deserialize_pg_message(row[0]) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
         """把这轮新增的消息批量写入 messages 表。
 
-        turn_index 从当前最大值 +1 开始，同批消息按顺序递增。
+        message_seq 从当前最大值 +1 开始，同批消息按顺序递增。
         """
         pool = await self._get_pool()
         async with pool.connection() as conn:
             cursor = await conn.execute(
-                "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM messages WHERE session_id = %s",
+                "SELECT COALESCE(MAX(message_seq), -1) + 1 FROM messages WHERE session_id = %s",
                 (session_id,),
             )
-            turn = (await cursor.fetchone())[0]
+            seq = (await cursor.fetchone())[0]
             for msg in messages:
                 role = _infer_role(msg)
                 content = _MessageAdapter.dump_json(msg).decode()
                 await conn.execute(
-                    "INSERT INTO messages (session_id, turn_index, role, content) VALUES (%s, %s, %s, %s)",
-                    (session_id, turn, role, content),
+                    "INSERT INTO messages (session_id, message_seq, role, content) VALUES (%s, %s, %s, %s)",
+                    (session_id, seq, role, content),
                 )
-                turn += 1
+                seq += 1
 
-    async def apply_compaction(self, session_id: str, summary: str, boundary_entry_id: str) -> None:
-        """写入 compaction 摘要记录（turn_index=-1，role='compaction'）。"""
+    async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None:
+        """写入 compaction 记录到独立的 compactions 表。"""
         pool = await self._get_pool()
         async with pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO messages (session_id, turn_index, role, content) VALUES (%s, -1, %s, %s)",
-                (session_id, "compaction", json.dumps({
-                    "type": "compaction",
-                    "summary": summary,
-                    "boundary_entry_id": boundary_entry_id,
-                })),
+                "INSERT INTO compactions (session_id, boundary_seq, summary) VALUES (%s, %s, %s)",
+                (session_id, boundary_seq, summary),
             )
 
     async def close(self) -> None:

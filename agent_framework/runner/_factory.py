@@ -11,7 +11,6 @@ from pathlib import Path
 
 from agent_framework.compaction import HarnessSummarizer
 from agent_framework.context import ContextManager
-from agent_framework.models import BaselineState
 from agent_framework.session import LocalSessionManager, PostgresSessionManager
 from agent_framework.tools import LocalToolSource, ToolLifecycle
 from agent_framework.types import ToolLifecycleEvent
@@ -98,23 +97,22 @@ async def ensure_tool_lifecycle(self):
 
 async def trigger_compaction(self, session_id: str) -> None:
     try:
-        messages = await self._session_manager.load_history(session_id)
-        boundary = self._context_manager.find_compaction_boundary(messages)
-        if boundary <= 0:
+        boundary_seq = await self._session_manager.get_max_message_seq(session_id)
+        if boundary_seq < 0:
             return
-        early_messages = messages[:boundary]
-        boundary_entry_id = self._boundary_id(messages, boundary)
+
+        messages = await self._session_manager.load_history(session_id)
 
         summarizer = self._compaction_summarizer
         if summarizer is None:
             summary = "Context compacted to fit window."
         else:
-            summary = await summarizer.summarize(early_messages, BaselineState())
+            summary = await summarizer.summarize(messages)
 
         await self._session_manager.apply_compaction(
             session_id,
             summary=summary,
-            boundary_entry_id=boundary_entry_id,
+            boundary_seq=boundary_seq,
         )
     except Exception as exc:  # pragma: no cover - fail-open
         logging.getLogger(__name__).warning(

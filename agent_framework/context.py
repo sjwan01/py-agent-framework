@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
 from agent_framework.models import PreparedContext, BaselineState
+from agent_framework.session._shared import _is_turn_start
 
 
 class ContextManager:
@@ -65,13 +66,6 @@ class ContextManager:
             tokens_used=tokens_after,
         )
 
-    def find_compaction_boundary(self, messages: list) -> int:
-        """Return the index of the first message that should be kept intact.
-
-        Messages before this index are candidates for compaction.
-        """
-        return _find_turn_boundary(messages, self._protect)
-
 
 # ── token 估算 ────────────────────────────────────────────────────────
 # 把消息列表里所有文本内容的字符数加起来，除以 4 作为 token 估算。
@@ -113,17 +107,6 @@ def _find_turn_boundary(messages: list, protect: int) -> int:
     # 消息总数少于 protect 个 turn，返回 0 表示全部保护。
     return 0
 
-
-def _is_turn_start(msg) -> bool:
-    """判断一条消息是不是用户 turn 的起点。
-
-    规则：ModelRequest 且第一个 part 是 UserPromptPart。
-    这约等于"用户发了一条新消息"。
-    """
-    if isinstance(msg, ModelRequest):
-        # parts 非空 且 第一个 part 是 UserPromptPart。
-        return bool(msg.parts) and isinstance(msg.parts[0], UserPromptPart)
-    return False
 
 
 # ── 工具结果截断 ─────────────────────────────────────────────────────
