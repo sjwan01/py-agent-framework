@@ -10,8 +10,7 @@ from pathlib import Path
 from agent_framework.compaction import HarnessSummarizer
 from agent_framework.context import ContextManager
 from agent_framework.models import BaselineState
-from agent_framework.pg_session import PostgresSessionManager
-from agent_framework.session import LocalSessionManager
+from agent_framework.session import LocalSessionManager, PostgresSessionManager
 from agent_framework.tools import LocalToolSource, ToolLifecycle
 from agent_framework.types import ToolLifecycleEvent
 

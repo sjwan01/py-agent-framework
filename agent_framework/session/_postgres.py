@@ -1,8 +1,4 @@
-"""PostgreSQL session adapter.
-
-功能和 session.py 的 LocalSessionManager 完全一样，只是后端换成了 PostgreSQL。
-通过 psycopg_pool 管理连接池，content 列使用 JSONB 类型。
-"""
+"""PostgreSQL session 实现。"""
 from __future__ import annotations
 
 from uuid import uuid4
@@ -10,17 +6,15 @@ from uuid import uuid4
 import ujson
 from psycopg_pool import AsyncConnectionPool
 
-# _infer_role 和 _MessageAdapter 复用 session.py 的定义，避免重复。
-from agent_framework.session import _infer_role, _MessageAdapter
+from agent_framework.session._shared import _infer_role, _MessageAdapter
 from agent_framework.types import SessionManager
 
 # ── PostgreSQL 建表语句 ──────────────────────────────────────────────
-# sessions 表：每个 session 一行。
-#   - metadata 用 JSONB，可以存任意结构化信息。
+# sessions 表：每个 session 一行，metadata 用 JSONB。
 # messages 表：每条消息一行。
-#   - entry_id 用 gen_random_uuid() 自动生成，不依赖应用层 UUID。
-#   - content 用 JSONB，psycopg 会自动在 Python dict 和 JSONB 之间转换。
-#   - 索引和 SQLite 版一样，按 (session_id, turn_index)。
+#   - entry_id 用 gen_random_uuid() 自动生成。
+#   - content 用 JSONB，psycopg 在 Python dict 和 JSONB 之间自动转换。
+#   - 索引按 (session_id, turn_index)。
 PG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -43,11 +37,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_turn_pg
 
 
 class PostgresSessionManager(SessionManager):
-    """PostgreSQL 持久化的多轮会话管理。
-
-    通过 psycopg_pool.AsyncConnectionPool 管理连接，支持连接池大小和溢出配置。
-    和 LocalSessionManager 接口完全一致，可以无缝切换。
-    """
+    """PostgreSQL 持久化的多轮会话管理。"""
 
     def __init__(
         self,
@@ -69,7 +59,6 @@ class PostgresSessionManager(SessionManager):
         """获取（或惰性创建）连接池。
 
         首次调用时创建连接池，打开连接，执行建表语句。
-        之后的所有调用共享同一个连接池。
         """
         if self._pool is None:
             self._pool = AsyncConnectionPool(
@@ -103,7 +92,6 @@ class PostgresSessionManager(SessionManager):
     async def load_history(self, session_id: str) -> list:
         """按 turn_index 升序加载指定 session 的所有普通消息。
 
-        role='compaction' 被排除（和 SQLite 版逻辑一致）。
         psycopg 可能把 JSONB 返回为 Python dict 或字符串，由 _deserialize_pg_message 统一处理。
         """
         pool = await self._get_pool()
@@ -113,19 +101,15 @@ class PostgresSessionManager(SessionManager):
                 (session_id,),
             )
             rows = await cursor.fetchall()
-            # row[0] 是 content 列，psycopg 返回的类型取决于数据：Python dict 或 str。
         return [_deserialize_pg_message(row[0]) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
         """把这轮新增的消息批量写入 messages 表。
 
         turn_index 从当前最大值 +1 开始，同批消息按顺序递增。
-        content 通过 _MessageAdapter 序列化为 JSON 字符串；psycopg
-        会把字符串转成 JSONB 存进去。
         """
         pool = await self._get_pool()
         async with pool.connection() as conn:
-            # 找到当前最大的 turn_index，+1 作为本轮起始 turn。
             cursor = await conn.execute(
                 "SELECT COALESCE(MAX(turn_index), -1) + 1 FROM messages WHERE session_id = %s",
                 (session_id,),
@@ -141,10 +125,7 @@ class PostgresSessionManager(SessionManager):
                 turn += 1
 
     async def apply_compaction(self, session_id: str, summary: str, boundary_entry_id: str) -> None:
-        """写入 compaction 摘要记录（turn_index=-1，role='compaction'）。
-
-        这条记录不会被 load_history 加载，只用于审计/诊断。
-        """
+        """写入 compaction 摘要记录（turn_index=-1，role='compaction'）。"""
         pool = await self._get_pool()
         async with pool.connection() as conn:
             await conn.execute(
@@ -157,23 +138,18 @@ class PostgresSessionManager(SessionManager):
             )
 
     async def close(self) -> None:
-        """关闭连接池，释放所有连接。
-
-        调用后不能再使用这个 SessionManager。
-        """
+        """关闭连接池，释放所有连接。"""
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
 
 
 # ── JSONB 反序列化辅助 ────────────────────────────────────────────────
-# psycopg 连接 JSONB 列时可能返回 Python dict（当连接设置了自动反序列化）
-# 或原始 JSON 字符串（取决于 psycopg 配置）。这个函数统一处理两种情况。
+# psycopg 连接 JSONB 列时可能返回 Python dict（连接设置了自动反序列化）
+# 或原始 JSON 字符串（取决于配置）。这个函数统一处理两种情况。
 
 def _deserialize_pg_message(data) -> object:
     """把 psycopg 返回的 JSONB 值（可能是 dict 或 str）反序列化为消息对象。"""
-    # 如果 psycopg 已经帮我们解析成 dict，直接用 validate_python。
     if isinstance(data, dict):
         return _MessageAdapter.validate_python(data)
-    # 否则是 JSON 字符串，用 validate_json 解析。
     return _MessageAdapter.validate_json(data.encode())

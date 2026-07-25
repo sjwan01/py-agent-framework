@@ -1,10 +1,4 @@
-"""Session adapters — SingleTurn (no-op) and Local (SQLite).
-
-提供三种 SessionManager 实现，都实现了 ``agent_framework.types.SessionManager`` 接口：
-- SingleTurnSessionManager：不持久化，每次都是全新会话。
-- LocalSessionManager：基于 SQLite 的多轮持久化。
-- PostgresSessionManager：基于 PostgreSQL 的多轮持久化（在 pg_session.py）。
-"""
+"""SQLite session 实现。"""
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
@@ -12,9 +6,8 @@ from uuid import uuid4
 
 import aiosqlite
 import ujson
-from pydantic import TypeAdapter
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 
+from agent_framework.session._shared import _infer_role, _MessageAdapter
 from agent_framework.types import SessionManager
 
 # ── SQLite 建表语句 ──────────────────────────────────────────────────
@@ -45,43 +38,6 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_turn
     ON messages(session_id, turn_index);
 """
 
-# ── 单消息序列化适配器 ───────────────────────────────────────────────
-# DB 按“每行一条消息”存储，不是整个消息列表，所以用 TypeAdapter(ModelMessage)
-# 而不是显式导出的 ModelMessagesTypeAdapter（那个是 list）。
-# dump_json / validate_json 走 Pydantic 的 schema，保证与 SDK 版本一致。
-_MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# SingleTurnSessionManager：单轮、无持久化
-# ═══════════════════════════════════════════════════════════════════════
-
-class SingleTurnSessionManager(SessionManager):
-    """不持久化历史，每次 run() 都是全新会话。
-
-    load_history 永远返回空列表，save_messages 是 no-op。
-    """
-
-    async def create_session(self, *, metadata: dict | None = None) -> str:
-        # 生成一个 UUID 作为 session_id，但不落盘。
-        return str(uuid4())
-
-    async def load_history(self, session_id: str) -> list:
-        # 没有历史，永远返回空。
-        return []
-
-    async def save_messages(self, session_id: str, messages: list) -> None:
-        # 不持久化，什么都不做。
-        pass
-
-    async def apply_compaction(self, session_id: str, summary: str, boundary_entry_id: str) -> None:
-        # 单轮模式不支持 compaction。
-        raise NotImplementedError("SingleTurnSessionManager does not support compaction")
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# LocalSessionManager：基于 SQLite 的多轮持久化
-# ═══════════════════════════════════════════════════════════════════════
 
 class LocalSessionManager(SessionManager):
     """SQLite 持久化，适合本地开发和测试。
@@ -98,10 +54,7 @@ class LocalSessionManager(SessionManager):
 
     @asynccontextmanager
     async def _connect(self):
-        """获取一个 SQLite 连接的生命周期上下文管理器。
-
-        首次连接时自动建表。连接关闭后不想被外部持有。
-        """
+        """获取一个 SQLite 连接，首次连接时自动建表。"""
         db = await aiosqlite.connect(self._db_path)
         # 让查询结果可以通过列名访问，例如 row["content"]。
         db.row_factory = aiosqlite.Row
@@ -145,8 +98,7 @@ class LocalSessionManager(SessionManager):
     async def save_messages(self, session_id: str, messages: list) -> None:
         """把一批新消息（本轮 delta）追加到 messages 表。
 
-        每条消息的 turn_index 从当前最大值 +1 开始，同一条消息的不同 role
-        （user 输入、tool 返回、assistant 回复）都共享同一个 turn_index。
+        每条消息的 turn_index 从当前最大值 +1 开始。
         """
         async with self._connect() as db:
             # 算出本 session 当前最大的 turn_index，新消息从下一个 turn 开始写。
@@ -184,22 +136,3 @@ class LocalSessionManager(SessionManager):
                 })),
             )
             await db.commit()
-
-
-# ── 角色推断 ──────────────────────────────────────────────────────────
-# 根据消息类型和 parts 内容判断消息的角色，写入 DB 的 role 列。
-# 这只是标记用途，不影响反序列化后的消息对象本身。
-
-def _infer_role(msg) -> str:
-    # ModelRequest：如果第一个 part 有 tool_name 属性，说明是 tool 返回消息，
-    # 否则是用户消息。
-    if isinstance(msg, ModelRequest):
-        parts = msg.parts
-        if parts and hasattr(parts[0], "tool_name"):
-            return "tool"
-        return "user"
-    # ModelResponse：assistant 的回复。
-    if isinstance(msg, ModelResponse):
-        return "assistant"
-    # 兜底。
-    return "unknown"
