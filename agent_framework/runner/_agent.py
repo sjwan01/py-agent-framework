@@ -6,7 +6,6 @@ import asyncio
 #       异常应直接抛出或交给上层/Extension 处理。
 import logging
 from collections.abc import AsyncIterator
-from typing import Literal, cast
 
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
@@ -16,6 +15,8 @@ from agent_framework.settings import Settings
 from agent_framework.types import CompactionSummarizer, SessionManager, AgentRunnerEvent
 
 from agent_framework.runner import _factory, _hooks, _internals
+
+_VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
 class AgentRunner:
@@ -142,11 +143,14 @@ class AgentRunner:
         # Apply thinking config when enabled.
         if self._settings.thinking_enabled:
             level = self._settings.thinking_level
-            model_settings["thinking"] = (
-                cast(Literal["minimal", "low", "medium", "high", "xhigh"], level)
-                if level
-                else True
-            )
+            if level is not None and level not in _VALID_THINKING_LEVELS:
+                logging.getLogger(__name__).warning(
+                    "Invalid thinking_level %r ignored (valid: %s)",
+                    level,
+                    ", ".join(sorted(_VALID_THINKING_LEVELS)),
+                )
+                level = None
+            model_settings["thinking"] = level if level else True
 
         return Agent(
             model=self._build_model(),

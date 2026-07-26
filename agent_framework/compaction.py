@@ -77,6 +77,3 @@ class HarnessSummarizer(CompactionSummarizer):
                     # system prompts, so the last system part carries the summary.
                     return system_parts[-1].content
         return ""
-
-
-
