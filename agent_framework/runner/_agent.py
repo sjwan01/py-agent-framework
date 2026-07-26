@@ -106,6 +106,7 @@ class AgentRunner:
         # 工具 scope（"main" 或 "subagent"），传给 ToolLifecycle.get_for_scope
         self._scope = scope
         # Compaction 总结器
+        # Compaction 总结器（始终有值，缺失配置回退到主 LLM）
         self._compaction_summarizer = compaction_summarizer or self._default_compaction_summarizer()
 
     # ── run() 和 run_stream() 的共享方法 ─────────────────────

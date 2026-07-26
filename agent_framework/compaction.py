@@ -33,26 +33,16 @@ class HarnessSummarizer(CompactionSummarizer):
     def __init__(self, settings: Settings):
         self._settings = settings
 
-        # Resolve compaction-specific base_url / api_key (fall back to main).
-        compaction_base_url = settings.compaction_base_url or settings.llm_base_url
-        compaction_api_key = settings.compaction_api_key or settings.llm_api_key
+        # 每个字段独立回退：不配就用主 LLM 的
+        model_id = settings.compaction_model_id or settings.llm_model_id
+        base_url = settings.compaction_base_url or settings.llm_base_url
+        api_key = settings.compaction_api_key or settings.llm_api_key
 
-        # Build the compaction model with the correct provider.
-        model: str | OpenAIChatModel
-        if settings.compaction_model_id:
-            if compaction_base_url == DEEPSEEK_OFFICIAL_URL:
-                provider = DeepSeekProvider(api_key=compaction_api_key)
-            else:
-                provider = OpenAIProvider(
-                    api_key=compaction_api_key,
-                    base_url=compaction_base_url,
-                )
-            model = OpenAIChatModel(
-                settings.compaction_model_id,
-                provider=provider,
-            )
+        if base_url == DEEPSEEK_OFFICIAL_URL:
+            provider = DeepSeekProvider(api_key=api_key)
         else:
-            model = settings.llm_model_id
+            provider = OpenAIProvider(api_key=api_key, base_url=base_url)
+        model = OpenAIChatModel(model_id, provider=provider)
 
         summary_prompt = settings.compaction_summary_prompt or _DEFAULT_SUMMARY_PROMPT
 

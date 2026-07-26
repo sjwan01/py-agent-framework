@@ -32,14 +32,8 @@ def default_context_manager(self) -> ContextManager | None:
 
 
 def default_compaction_summarizer(self):
-    """创建 Harness 压缩总结器。
-
-    如果 Settings 配置了 compaction_model_id，自动创建；
-    否则返回 None（压缩时用硬编码占位字符串）。
-    """
-    if self._settings.compaction_model_id:
-        return HarnessSummarizer(self._settings)
-    return None
+    """创建 Harness 压缩总结器，缺失配置回退到主 LLM。"""
+    return HarnessSummarizer(self._settings)
 
 
 def default_session_manager(self):
@@ -145,10 +139,7 @@ async def trigger_compaction(self, session_id: str) -> None:
         messages = await self._session_manager.load_history(session_id)
 
         summarizer = self._compaction_summarizer
-        if summarizer is None:
-            summary = "Context compacted to fit window."
-        else:
-            summary = await summarizer.summarize(messages)
+        summary = await summarizer.summarize(messages)
 
         await self._session_manager.apply_compaction(
             session_id,
