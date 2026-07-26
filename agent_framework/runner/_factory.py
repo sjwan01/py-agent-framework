@@ -29,9 +29,10 @@ def default_context_manager(self) -> ContextManager | None:
     )
 
 
-def default_compaction_summarizer(self):
-    """创建 Harness 压缩总结器，缺失配置回退到主 LLM。"""
-    return HarnessSummarizer(self._settings)
+def default_compaction_summarizer(self, model):
+    """创建 Harness 压缩总结器，使用指定模型。"""
+    from agent_framework.compaction import HarnessSummarizer
+    return HarnessSummarizer(model=model, settings=self._settings)
 
 
 def default_session_manager(self):

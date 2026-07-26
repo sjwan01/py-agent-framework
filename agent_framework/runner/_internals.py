@@ -10,35 +10,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from pydantic_ai.messages import ModelRequest, ModelResponse
-from pydantic_ai.models.openai import OpenAIChatModel
-from pydantic_ai.providers.deepseek import DeepSeekProvider
-from pydantic_ai.providers.openai import OpenAIProvider
-
-# 如果用户配的 base_url 正好是 DeepSeek 官方 API 地址，自动切换
-# 为 DeepSeekProvider；其他所有 URL 默认用 OpenAIProvider。
-DEEPSEEK_OFFICIAL_URL = "https://api.deepseek.com"
-
-
-def build_model(self):
-    """从 Settings 构建 LLM 模型实例。
-
-    _model 参数是测试注入通道（不对外暴露）。生产环境从
-    settings.llm_base_url 自动选择 provider。
-    """
-    if self._model is not None:
-        return self._model
-
-    # 自动识别 DeepSeek：官方 API 地址走 DeepSeekProvider，
-    # 其余（包括本地 vLLM、DashScope 等）全部走 OpenAIProvider。
-    if self._settings.llm_base_url == DEEPSEEK_OFFICIAL_URL:
-        provider = DeepSeekProvider(api_key=self._settings.llm_api_key)
-    else:
-        provider = OpenAIProvider(
-            api_key=self._settings.llm_api_key,
-            base_url=self._settings.llm_base_url,
-        )
-
-    return OpenAIChatModel(self._settings.llm_model_id, provider=provider)
 
 
 def messages_to_persist(original_history: list, all_messages: list) -> list:

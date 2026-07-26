@@ -43,7 +43,6 @@ class AgentRunner:
 
     # --- 来自 _internals.py（运行时工具函数）---
     _build_hooks = _hooks.build_hooks
-    _build_model = _internals.build_model
     _messages_to_persist = staticmethod(_internals.messages_to_persist)
     _notify_streamers = staticmethod(_internals.notify_streamers)
     _drain_pending = staticmethod(_internals.drain_pending)
@@ -65,15 +64,16 @@ class AgentRunner:
         self,
         settings: Settings,
         config: AgentConfig,
+        model,                         # 必需：调用方自己组装好的 model
         *,
         session_manager: SessionManager | None = None,
         tools: list = (),
-        _model=None,
         tool_lifecycle=None,
         context_manager=None,
         extensions: list | None = None,
         scope: str = "main",
         compaction_summarizer: CompactionSummarizer | None = None,
+        compaction_model=None,          # None → 复用主 model
         on_warning: Callable[[str, Exception | None], None] | None = None,
     ):
         """构造 AgentRunner。
@@ -91,8 +91,8 @@ class AgentRunner:
         self._config = config
         # 会话持久化：优先用注入的，否则自动选 PG 或 SQLite
         self._session_manager = session_manager or self._default_session_manager()
-        # LLM 模型（内部使用——测试注入 TestModel 的通道，不对外暴露）
-        self._model = _model
+        # LLM 模型：调用方传入
+        self._model = model
         # 用户直接传入的工具（无 ToolLifecycle 包装）
         self._raw_tools = list(tools)
         # 工具生命周期管理器（懒初始化，首次 run 时才注册）
@@ -106,7 +106,11 @@ class AgentRunner:
         self._scope = scope
         # Compaction 总结器
         # Compaction 总结器（始终有值，缺失配置回退到主 LLM）
-        self._compaction_summarizer = compaction_summarizer or self._default_compaction_summarizer()
+        # Compaction 总结器（始终有值，缺失配置回退到主 LLM）
+        self._compaction_summarizer = (
+            compaction_summarizer
+            or self._default_compaction_summarizer(compaction_model or model)
+        )
 
     # ── run() 和 run_stream() 的共享方法 ─────────────────────
 
@@ -217,7 +221,7 @@ class AgentRunner:
             model_settings["thinking"] = level if level else True
 
         return Agent(
-            model=self._build_model(),
+            model=self._model,
             instructions=self._config.instructions,
             tools=await self._get_tools(),
             capabilities=capabilities or None,
