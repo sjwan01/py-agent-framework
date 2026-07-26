@@ -6,10 +6,8 @@ AgentRunner 实例。
 """
 from __future__ import annotations
 
-import importlib.util
 import os
 import tempfile
-from pathlib import Path
 
 from agent_framework.compaction import HarnessSummarizer
 from agent_framework.context import ContextManager
@@ -150,36 +148,4 @@ async def trigger_compaction(self, session_id: str) -> None:
         self._on_warning(f"Compaction failed for session {session_id}: {exc}", exc)
 
 
-# ── Extension 自动发现 ───────────────────────────────────────
 
-def discover_extensions(paths: list[str]) -> list:
-    """从给定目录扫描 Python 文件，自动发现 Extension 实现。
-
-    规则：
-    - 跳过以 _ 开头的文件名
-    - 找到实现了 on_agent_runner_event 方法的类
-    - 跳过 Extension 基类本身
-    - 用空构造函数实例化（所以 Extension 必须支持无参构造）
-    """
-    extensions = []
-    for path_str in paths:
-        p = Path(path_str)
-        if not p.exists():
-            continue
-        for py_file in p.glob("*.py"):
-            if py_file.name.startswith("_"):
-                continue
-            spec = importlib.util.spec_from_file_location(py_file.stem, str(py_file))
-            if spec and spec.loader:
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                for attr_name in dir(mod):
-                    attr = getattr(mod, attr_name)
-                    # 有 on_agent_runner_event 方法的类 → Extension 实例
-                    if isinstance(attr, type) and hasattr(attr, "on_agent_runner_event"):
-                        if attr_name != "Extension":
-                            try:
-                                extensions.append(attr())
-                            except TypeError:
-                                pass
-    return extensions

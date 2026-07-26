@@ -58,7 +58,6 @@ class AgentRunner:
     _default_compaction_summarizer = _factory.default_compaction_summarizer
     _ensure_tool_lifecycle = _factory.ensure_tool_lifecycle
     _trigger_compaction = _factory.trigger_compaction
-    discover_extensions = staticmethod(_factory.discover_extensions)
 
     # ── 构造函数 ─────────────────────────────────────────────
 
