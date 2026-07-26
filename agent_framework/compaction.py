@@ -33,10 +33,19 @@ class HarnessSummarizer(CompactionSummarizer):
     def __init__(self, settings: Settings):
         self._settings = settings
 
-        # 每个字段独立回退：不配就用主 LLM 的
-        model_id = settings.compaction_model_id or settings.llm_model_id
-        base_url = settings.compaction_base_url or settings.llm_base_url
-        api_key = settings.compaction_api_key or settings.llm_api_key
+        # 任意一个 compaction 配置缺失 → 全部回退到主 LLM
+        if (
+            not settings.compaction_model_id
+            or not settings.compaction_base_url
+            or not settings.compaction_api_key
+        ):
+            model_id = settings.llm_model_id
+            base_url = settings.llm_base_url
+            api_key = settings.llm_api_key
+        else:
+            model_id = settings.compaction_model_id
+            base_url = settings.compaction_base_url
+            api_key = settings.compaction_api_key
 
         if base_url == DEEPSEEK_OFFICIAL_URL:
             provider = DeepSeekProvider(api_key=api_key)
