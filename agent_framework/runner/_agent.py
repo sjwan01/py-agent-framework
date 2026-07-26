@@ -6,6 +6,7 @@ import asyncio
 #       异常应直接抛出或交给上层/Extension 处理。
 import logging
 from collections.abc import AsyncIterator
+from typing import Literal, cast
 
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
@@ -138,6 +139,14 @@ class AgentRunner:
         model_settings = ModelSettings(
             parallel_tool_calls=self._settings.parallel_tool_calls,
         )
+        # Apply thinking config when enabled.
+        if self._settings.thinking_enabled:
+            level = self._settings.thinking_level
+            model_settings["thinking"] = (
+                cast(Literal["minimal", "low", "medium", "high", "xhigh"], level)
+                if level
+                else True
+            )
 
         return Agent(
             model=self._build_model(),

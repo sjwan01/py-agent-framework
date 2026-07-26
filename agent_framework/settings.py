@@ -14,11 +14,13 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     # ── LLM ──
-    # TODO: 缺少 thinking 相关配置（是否开启思考、思考等级）。
-    #       Pydantic AI 支持 thinking / reasoning，但 V2 目前完全没透出这个 knob。
     llm_model_id: str
     llm_base_url: str
     llm_api_key: str
+
+    # Thinking (main agent).  Maps to pydantic-ai ModelSettings.thinking.
+    thinking_enabled: bool = True
+    thinking_level: str | None = None
 
     # Session persistence
     postgres_url: str | None = None
@@ -39,9 +41,16 @@ class Settings(BaseSettings):
     parallel_tool_calls: bool = False
 
     # Compaction summarizer
-    # TODO: compaction 模型缺少独立 provider 配置。
-    #       虽然有 compaction_model_id + max_output_tokens，但 base_url /
-    #       api_key 复用主模型的，prompts 硬编码在 HarnessSummarizer 里，
-    #       thinking 等级不可配置。
     compaction_model_id: str | None = None
     compaction_max_output_tokens: int | None = None
+
+    # Compaction model — independent base_url / api_key (fall back to main LLM).
+    compaction_base_url: str | None = None
+    compaction_api_key: str | None = None
+
+    # Compaction thinking (separate from main agent).
+    compaction_thinking_enabled: bool = False
+    compaction_thinking_level: str | None = None
+
+    # Custom summary prompt.  When None, the built-in four-section template is used.
+    compaction_summary_prompt: str | None = None

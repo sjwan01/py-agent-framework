@@ -5,11 +5,26 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from pydantic_ai.messages import ModelRequest, SystemPromptPart
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.deepseek import DeepSeekProvider
+from pydantic_ai.providers.openai import OpenAIProvider
 from pydantic_ai.usage import RunUsage
 from pydantic_ai_harness.compaction import SummarizingCompaction
 
 from agent_framework.settings import Settings
 from agent_framework.types import CompactionSummarizer
+
+DEEPSEEK_OFFICIAL_URL = "https://api.deepseek.com"
+
+_DEFAULT_SUMMARY_PROMPT = (
+    "You are a context compaction assistant. "
+    "Summarize the conversation so far using exactly this format:\n\n"
+    "Goal: ...\n"
+    "Progress: ...\n"
+    "Key Decisions: ...\n"
+    "Next Steps: ...\n\n"
+    "Messages:\n{messages}"
+)
 
 
 class HarnessSummarizer(CompactionSummarizer):
@@ -17,26 +32,36 @@ class HarnessSummarizer(CompactionSummarizer):
 
     def __init__(self, settings: Settings):
         self._settings = settings
-        # TODO: 当前 summary_prompt 非常草率，只是硬编码了一个四段式模板。
-        #       pi-agent 的 compaction 摘要格式包含 Goal、Constraints & Preferences、
-        #       Progress（Done/In Progress/Blocked）、Key Decisions、Next Steps、
-        #       Critical Context、read-files、modified-files 等结构化字段，且支持
-        #       通过 Extension 的 session_before_compact 事件自定义摘要。
-        #       V2 应支持可配置的 prompt 模板，并允许 Extension 覆盖摘要。
+
+        # Resolve compaction-specific base_url / api_key (fall back to main).
+        compaction_base_url = settings.compaction_base_url or settings.llm_base_url
+        compaction_api_key = settings.compaction_api_key or settings.llm_api_key
+
+        # Build the compaction model with the correct provider.
+        model: str | OpenAIChatModel
+        if settings.compaction_model_id:
+            if compaction_base_url == DEEPSEEK_OFFICIAL_URL:
+                provider = DeepSeekProvider(api_key=compaction_api_key)
+            else:
+                provider = OpenAIProvider(
+                    api_key=compaction_api_key,
+                    base_url=compaction_base_url,
+                )
+            model = OpenAIChatModel(
+                settings.compaction_model_id,
+                provider=provider,
+            )
+        else:
+            model = settings.llm_model_id
+
+        summary_prompt = settings.compaction_summary_prompt or _DEFAULT_SUMMARY_PROMPT
+
         self._strategy = SummarizingCompaction(
-            model=settings.compaction_model_id,
+            model=model,
             max_messages=1,
             keep_messages=0,
             preserve_first_user_message=False,
-            summary_prompt=(
-                "You are a context compaction assistant. "
-                "Summarize the conversation so far using exactly this format:\n\n"
-                "Goal: ...\n"
-                "Progress: ...\n"
-                "Key Decisions: ...\n"
-                "Next Steps: ...\n\n"
-                "Messages:\n{messages}"
-            ),
+            summary_prompt=summary_prompt,
         )
 
     async def summarize(self, messages: list) -> str:
@@ -52,3 +77,6 @@ class HarnessSummarizer(CompactionSummarizer):
                     # system prompts, so the last system part carries the summary.
                     return system_parts[-1].content
         return ""
+
+
+

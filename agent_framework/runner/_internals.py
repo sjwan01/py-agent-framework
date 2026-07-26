@@ -8,30 +8,30 @@ from collections.abc import AsyncIterator
 
 from pydantic_ai.messages import ModelRequest, ModelResponse
 from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.openai import OpenAIProvider
+
+DEEPSEEK_OFFICIAL_URL = "https://api.deepseek.com"
 
 
 def build_model(self):
-    """Return the model override or build an OpenAI-compatible model from settings.
+    """Return the model override or build a provider-aware model from settings.
 
-    Pydantic AI's ``Agent`` can accept a model name string and resolve it
-    automatically, but that path does not support a custom ``base_url`` or
-    ``api_key`` without a pre-configured provider.  V2 keeps explicit
-    provider construction so deployments with local/vLLM endpoints work out
-    of the box.
+    Provider is chosen based on ``llm_base_url``: the official DeepSeek API
+    URL selects ``DeepSeekProvider``; everything else uses ``OpenAIProvider``.
     """
-    # TODO: 当前硬编码为 OpenAIProvider。当 settings.llm_base_url 是 DeepSeek
-    #       官方 API URL（或设置了明确的 provider 类型）时，应切换为对应的
-    #       DeepSeek provider，而不是继续用 OpenAI 兼容模式。
     if self._model is not None:
         return self._model
-    return OpenAIChatModel(
-        self._settings.llm_model_id,
-        provider=OpenAIProvider(
+
+    if self._settings.llm_base_url == DEEPSEEK_OFFICIAL_URL:
+        provider = DeepSeekProvider(api_key=self._settings.llm_api_key)
+    else:
+        provider = OpenAIProvider(
             api_key=self._settings.llm_api_key,
             base_url=self._settings.llm_base_url,
-        ),
-    )
+        )
+
+    return OpenAIChatModel(self._settings.llm_model_id, provider=provider)
 
 
 def messages_to_persist(original_history: list, all_messages: list) -> list:
