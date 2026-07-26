@@ -18,14 +18,12 @@ class ContextManager:
         high_watermark_ratio: float = 0.75,
         protect_turns: int = 5,
         truncate_chars: int = 1_000,
-        token_estimator=None,
         context_window_cap: int | None = None,
     ):
         self._low = low_watermark_ratio
         self._high = high_watermark_ratio
         self._protect = protect_turns
         self._truncate_chars = truncate_chars
-        self._estimate = token_estimator or _default_estimate
         self._context_window_cap = context_window_cap
         self._frozen_baseline: str | None = None
         self._baseline_state: BaselineState | None = None
@@ -33,11 +31,6 @@ class ContextManager:
     async def prepare(
         self, messages: list, *, system_prompt: str, current_state: BaselineState,
     ) -> PreparedContext:
-        # TODO: prepare 内部多次遍历 messages（估算、找 boundary、截断、再估算）。
-        #       当历史很长时这是 O(n) 甚至 O(n*m) 的开销。可考虑：
-        #       1) 单次遍历同时完成估算、boundary 标记和截断；
-        #       2) 使用增量/缓存结构避免每轮重新扫描全部历史。
-
         # Work on a copy so the caller's list is not mutated and prepare is idempotent.
         messages = list(messages)
 
@@ -50,16 +43,22 @@ class ContextManager:
             if diff:
                 messages = _inject_diff(messages, diff)
 
-        tokens = self._estimate(messages)
         context_cap = self._context_window_cap or 128_000
         low_mark = context_cap * self._low
         high_mark = context_cap * self._high
 
-        if tokens > low_mark:
-            boundary = _find_turn_boundary(messages, self._protect)
-            messages = _truncate_old_tool_results(messages, boundary, self._truncate_chars)
+        total_tokens, boundary = _estimate_and_find_boundary(messages, self._protect)
 
-        tokens_after = self._estimate(messages)
+        if total_tokens <= low_mark:
+            return PreparedContext(
+                messages=messages,
+                needs_compaction=total_tokens > high_mark,
+                tokens_used=total_tokens,
+            )
+
+        messages, tokens_after = _truncate_and_estimate(
+            messages, boundary, self._truncate_chars
+        )
         return PreparedContext(
             messages=messages,
             needs_compaction=tokens_after > high_mark,
@@ -67,109 +66,119 @@ class ContextManager:
         )
 
 
-# ── token 估算 ────────────────────────────────────────────────────────
-# 把消息列表里所有文本内容的字符数加起来，除以 4 作为 token 估算。
-# 这是一个非常粗糙的启发式方法（~4 chars/token），
-# 准确 token 计数需要 tiktoken 或类似分词器。
+# ── 单次正向遍历：估算 + turn boundary ─────────────────────────────────
+# 合并原来的 _default_estimate 和 _find_turn_boundary。
+# 正向遍历一次，同时累计字符数和记录每个 user turn 的起始索引。
 
-def _default_estimate(messages: list) -> int:
-    """粗略 token 估算：所有文本字符总数 ÷ 4，最少返回 1。"""
-    total = 0
-    # 遍历每条消息的每个 part，只统计字符串类型的 content。
-    for msg in messages:
+def _estimate_and_find_boundary(messages: list, protect: int) -> tuple[int, int]:
+    """单次正向遍历，返回 (total_tokens, boundary_index)。
+
+    total_tokens: 所有文本字符数 ÷ 4 的粗略估算。
+    boundary_index: 第 protect 个 user turn（从末尾数）的起始索引。
+                    此索引之前的消息可以被截断。
+    """
+    total_chars = 0
+    turn_starts: list[int] = []
+
+    for i, msg in enumerate(messages):
+        if _is_turn_start(msg):
+            turn_starts.append(i)
         for part in getattr(msg, "parts", ()):
             content = getattr(part, "content", None)
             if isinstance(content, str):
-                total += len(content)
-    # 至少返回 1，避免下游除以 0 之类的边界情况。
-    return max(total // 4, 1)
+                total_chars += len(content)
+
+    tokens = max(total_chars // 4, 1)
+
+    if len(turn_starts) >= protect:
+        boundary = turn_starts[-protect]
+    else:
+        boundary = 0
+
+    return tokens, boundary
 
 
-# ── turn 边界查找 ─────────────────────────────────────────────────────
-# 从消息列表末尾往前数 protect 个用户 turn，返回被保护范围之外的
-# 第一个消息索引。这个索引之前的消息是"旧消息"，可以被截断或压缩。
+# ── 单次正向遍历：截断 + 重新估算 ──────────────────────────────────────
+# 合并原来的 _truncate_old_tool_results 和第二次 _estimate。
+# 一边截断 boundary 之前的旧 tool results，一边累加截断后的字符数。
 
-def _find_turn_boundary(messages: list, protect: int) -> int:
-    """从后往前找到第 protect 个用户 turn 的起始位置。
-
-    返回值是保护范围之外的第一条消息的索引：
-    - messages[boundary:] → 受保护的最近 protect 个 turn
-    - messages[:boundary] → 可以被截断/压缩的旧消息
-    """
-    turns = 0
-    # 从列表末尾往前扫描，每次遇到用户 turn 开头就计数 +1。
-    for i in range(len(messages) - 1, -1, -1):
-        if _is_turn_start(messages[i]):
-            turns += 1
-            # 数够了 protect 个 turn，返回当前位置作为"保护边界"。
-            if turns >= protect:
-                return i
-    # 消息总数少于 protect 个 turn，返回 0 表示全部保护。
-    return 0
-
-
-
-# ── 工具结果截断 ─────────────────────────────────────────────────────
-# 把 boundary 之前的旧 tool result 内容截断到 max_chars 个字符。
-# 只截普通的 ToolReturnPart，不动框架 typed 子类（如 ToolSearchReturnPart），
-# 避免破坏结构性数据。tool-call / tool-result 的配对关系保持不变。
-
-def _truncate_old_tool_results(messages: list, boundary: int, max_chars: int) -> list:
-    """把 boundary 之前的 tool result 截断到 max_chars 字符，返回新列表。
+def _truncate_and_estimate(
+    messages: list, boundary: int, max_chars: int
+) -> tuple[list, int]:
+    """截断旧 tool results 并返回 (new_messages, tokens_after)。
 
     不修改原始 messages。只有精确的 ``ToolReturnPart``（非子类）
     且 content 是字符串且长度超过 max_chars 才会被截断。
     """
     out: list = []
+    total_chars = 0
+
     for i, msg in enumerate(messages):
-        # 不是 ModelRequest 或在保护范围内的消息直接保留，不动。
+        # 不在截断范围的 ModelRequest 需要遍历 parts 统计 token。
         if not isinstance(msg, ModelRequest) or i >= boundary:
             out.append(msg)
+            for part in getattr(msg, "parts", ()):
+                content = getattr(part, "content", None)
+                if isinstance(content, str):
+                    total_chars += len(content)
             continue
 
-        # 遍历消息的 parts，检查是否有需要截断的 tool result。
         new_parts: list = []
         changed = False
         for part in msg.parts:
-            # 三个条件全部满足才截断：
-            #   1. type(part) is ToolReturnPart — 精确类型，不碰子类
-            #   2. content 是字符串
-            #   3. 长度超过 max_chars
             if (
                 type(part) is ToolReturnPart
                 and isinstance(part.content, str)
                 and len(part.content) > max_chars
             ):
-                # 用 replace 重建 part（不可变风格），保留前 max_chars 个字符。
-                new_parts.append(replace(part, content=part.content[:max_chars]))
+                truncated_content = part.content[:max_chars]
+                new_parts.append(replace(part, content=truncated_content))
                 changed = True
+                total_chars += len(truncated_content)
             else:
                 new_parts.append(part)
+                content = getattr(part, "content", None)
+                if isinstance(content, str):
+                    total_chars += len(content)
 
-        # 如果这个消息的 parts 有变化，用 replace 重建整个消息。
         if changed:
             out.append(replace(msg, parts=new_parts))
         else:
             out.append(msg)
 
-    return out
+    return out, max(total_chars // 4, 1)
 
 
 def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
-    # TODO: diff 消息只列了 skill/tool 名称，没显示 description，也没处理
-    #       工具/技能被删除的情况。pi-agent 的 diff 消息会包含描述，并明确
-    #       标出 Removed/Added/Updated。应改为结构化 diff，包含描述和删除事件。
-    lines = []
+    lines: list[str] = []
+
     for name, desc in current.skills.items():
         if name not in baseline.skills:
-            lines.append(f'  Added skill "{name}"')
+            lines.append(f'  Added skill "{name}": "{desc}"')
         elif baseline.skills[name] != desc:
-            lines.append(f'  Updated skill "{name}"')
+            lines.append(f'  Updated skill "{name}": "{desc}"')
+            # Note: old description available as baseline.skills[name] if needed
+    for name in baseline.skills:
+        if name not in current.skills:
+            lines.append(f'  Removed skill "{name}": "{baseline.skills[name]}"')
+
     for name, desc in current.tools.items():
         if name not in baseline.tools:
-            lines.append(f'  Added tool "{name}"')
+            lines.append(f'  Added tool "{name}": "{desc}"')
         elif baseline.tools[name] != desc:
-            lines.append(f'  Updated tool "{name}"')
+            lines.append(f'  Updated tool "{name}": "{desc}"')
+            # Note: old description available as baseline.tools[name] if needed
+    for name in baseline.tools:
+        if name not in current.tools:
+            lines.append(f'  Removed tool "{name}": "{baseline.tools[name]}"')
+
+    baseline_ctx = set(baseline.context)
+    current_ctx = set(current.context)
+    for item in sorted(current_ctx - baseline_ctx):
+        lines.append(f'  Added context "{item}"')
+    for item in sorted(baseline_ctx - current_ctx):
+        lines.append(f'  Removed context "{item}"')
+
     return "\n".join(lines)
 
 
