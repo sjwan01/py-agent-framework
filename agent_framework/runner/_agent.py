@@ -2,10 +2,8 @@
 from __future__ import annotations
 
 import asyncio
-# TODO: 移除 logging。Agent 框架层不应包含业务无关的日志输出；
-#       异常应直接抛出或交给上层/Extension 处理。
-import logging
 from collections.abc import AsyncIterator
+from typing import Callable
 
 from pydantic_ai import Agent
 from pydantic_ai.settings import ModelSettings
@@ -53,7 +51,9 @@ class AgentRunner:
         extensions: list | None = None,
         scope: str = "main",
         compaction_summarizer: CompactionSummarizer | None = None,
+        on_warning: Callable[[str, Exception | None], None] | None = None,
     ):
+        self._on_warning = on_warning or (lambda msg, exc=None: None)
         self._settings = settings
         self._config = config
         self._session_manager = session_manager or self._default_session_manager()
@@ -98,9 +98,7 @@ class AgentRunner:
             history = prepared.messages
             needs_compaction = prepared.needs_compaction
         except Exception as exc:  # pragma: no cover - fail-open
-            logging.getLogger(__name__).warning(
-                "ContextManager prepare failed: %s", exc, exc_info=True
-            )
+            self._on_warning(f"ContextManager prepare failed: {exc}", exc)
 
         ctx_data = {
             "session_id": session_id,
@@ -117,7 +115,7 @@ class AgentRunner:
             history = before_result["messages"]
 
         await self._fire(
-            AgentRunnerEvent.AGENT_RUN,
+            AgentRunnerEvent.AGENT_START,
             {"session_id": session_id, "prompt": prompt, "messages": history},
         )
 
@@ -144,10 +142,10 @@ class AgentRunner:
         if self._settings.thinking_enabled:
             level = self._settings.thinking_level
             if level is not None and level not in _VALID_THINKING_LEVELS:
-                logging.getLogger(__name__).warning(
-                    "Invalid thinking_level %r ignored (valid: %s)",
-                    level,
-                    ", ".join(sorted(_VALID_THINKING_LEVELS)),
+                self._on_warning(
+                    f"Invalid thinking_level {level!r} ignored (valid: "
+                    f"{', '.join(sorted(_VALID_THINKING_LEVELS))})",
+                    None,
                 )
                 level = None
             model_settings["thinking"] = level if level else True
@@ -185,6 +183,8 @@ class AgentRunner:
         payload = {"session_id": session_id, "output": output, "usage": usage}
         await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, payload)
         await self._notify_streamers(streamers, AgentRunnerEvent.AFTER_AGENT_RUN, payload, pending)
+        await self._fire(AgentRunnerEvent.AGENT_END, payload)
+        await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_END, payload, pending)
         async for chunk in self._drain_pending(pending):
             yield chunk
 
@@ -233,7 +233,7 @@ class AgentRunner:
             async for text in result.stream_text(delta=False):
                 output_parts.append(text)
                 await self._fire(
-                    AgentRunnerEvent.AGENT_RUN,
+                    AgentRunnerEvent.TOKEN_STREAM,
                     {
                         "session_id": session_id,
                         "event": "on_chat_model_stream",
@@ -284,8 +284,8 @@ class AgentRunner:
                     "event": "on_chat_model_stream",
                     "data": {"chunk": text},
                 }
-                await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
-                await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_RUN, payload, pending)
+                await self._fire(AgentRunnerEvent.TOKEN_STREAM, payload)
+                await self._notify_streamers(streamers, AgentRunnerEvent.TOKEN_STREAM, payload, pending)
                 async for chunk in self._drain_pending(pending):
                     yield chunk
 

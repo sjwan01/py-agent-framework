@@ -1,9 +1,6 @@
 """Runtime helpers for AgentRunner."""
 from __future__ import annotations
 
-# TODO: 移除 logging。Agent 框架层不应包含业务无关的日志输出；
-#       异常应直接抛出或交给上层/Extension 处理。
-import logging
 from collections.abc import AsyncIterator
 
 from pydantic_ai.messages import ModelRequest, ModelResponse
@@ -78,15 +75,14 @@ async def notify_streamers(
 ) -> None:
     """Forward an event to streaming extensions and collect yielded chunks."""
     for s in streamers:
+        stream_fn = getattr(s, "on_agent_runner_event_stream", None)
+        if stream_fn is None:
+            continue
         try:
-            async for chunk in s.on_agent_runner_event_stream(event, data):
+            async for chunk in stream_fn(event, data):
                 pending.append(chunk)
-        except Exception as exc:  # pragma: no cover - fail-open
-            logging.getLogger(__name__).warning(
-                "Streaming extension %s failed: %s",
-                type(s).__name__, exc,
-                exc_info=True,
-            )
+        except Exception:  # pragma: no cover - fail-open
+            pass
 
 
 async def drain_pending(pending: list) -> AsyncIterator[dict]:
@@ -114,10 +110,9 @@ async def fire(self, event: str, data: dict) -> dict:
         try:
             r = await ext.on_agent_runner_event(event, current)
         except Exception as exc:  # pragma: no cover - fail-open
-            logging.getLogger(__name__).warning(
-                "Extension %s handler for %s failed: %s",
-                type(ext).__name__, event, exc,
-                exc_info=True,
+            self._on_warning(
+                f"Extension {type(ext).__name__} handler for {event} failed: {exc}",
+                exc,
             )
             continue
         if isinstance(r, dict):
@@ -139,10 +134,9 @@ async def fire_notify(
         try:
             r = await ext.on_agent_runner_event(event, snapshot)
         except Exception as exc:  # pragma: no cover - fail-open
-            logging.getLogger(__name__).warning(
-                "Extension %s handler for %s failed: %s",
-                type(ext).__name__, event, exc,
-                exc_info=True,
+            self._on_warning(
+                f"Extension {type(ext).__name__} handler for {event} failed: {exc}",
+                exc,
             )
             continue
         if isinstance(r, dict) and r.get(cancel_key):

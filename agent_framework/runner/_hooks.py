@@ -18,12 +18,11 @@ def build_hooks(self, session_id: str, *, pending=None, streamers=None):
     async def _on_tool_start(ctx, *, call, tool_def, args):
         payload = {
             "session_id": session_id,
-            "event": "on_tool_start",
             "name": call.tool_name,
             "data": {"args": args},
         }
-        await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
-        await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_RUN, payload, pending)
+        await self._fire(AgentRunnerEvent.TOOL_START, payload)
+        await self._notify_streamers(streamers, AgentRunnerEvent.TOOL_START, payload, pending)
         return args
 
     @hooks.on.tool_execute
@@ -60,12 +59,11 @@ def build_hooks(self, session_id: str, *, pending=None, streamers=None):
         content = result_data.get("content", result)
         payload = {
             "session_id": session_id,
-            "event": "on_tool_end",
             "name": call.tool_name,
             "data": {"result": content},
         }
-        await self._fire(AgentRunnerEvent.AGENT_RUN, payload)
-        await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_RUN, payload, pending)
+        await self._fire(AgentRunnerEvent.TOOL_END, payload)
+        await self._notify_streamers(streamers, AgentRunnerEvent.TOOL_END, payload, pending)
         return content
 
     return hooks

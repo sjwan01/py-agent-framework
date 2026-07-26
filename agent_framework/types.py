@@ -93,8 +93,6 @@ class MessageRole(StrEnum):
 #   └── TOOL_REMOVED          # 被去重/冲突解决淘汰的工具
 #
 # AgentRunnerEvent 发生在单次 run() / run_stream() 运行时。
-# TODO: 当前实现与下图不一致；下图是目标设计，尚未替换代码。
-# 来龙去脉见 .scratch/notes/agentrunnerevent-todo.md（本地文件，不提交）。
 #
 #   run() / run_stream()
 #   ├── SESSION_START
@@ -127,7 +125,11 @@ class AgentRunnerEvent(StrEnum):
     SESSION_END = "session_end"
     CONTEXT_PREPARE = "context_prepare"
     BEFORE_AGENT_RUN = "before_agent_run"
-    AGENT_RUN = "agent_run"
+    AGENT_START = "agent_start"
+    AGENT_END = "agent_end"
+    TOKEN_STREAM = "token_stream"
+    TOOL_START = "tool_start"
+    TOOL_END = "tool_end"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
     AFTER_AGENT_RUN = "after_agent_run"

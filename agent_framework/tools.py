@@ -2,9 +2,6 @@
 from __future__ import annotations
 
 import inspect
-# TODO: 移除 logging。Agent 框架层不应包含业务无关的日志输出；
-#       异常应直接抛出或交给上层/Extension 处理。
-import logging
 from typing import Any
 
 from pydantic_ai import Tool as PydanticTool
@@ -110,7 +107,8 @@ class SubagentToolSource(ToolSource):
 
 
 class ToolLifecycle:
-    def __init__(self):
+    def __init__(self, *, on_warning=None):
+        self._on_warning = on_warning or (lambda msg, exc=None: None)
         self._tools: dict[str, Any] = {}
         self._handlers: dict[str, list[ToolEventHandler]] = {}
         self.on(ToolLifecycleEvent.TOOL_CONFLICT, self._default_conflict_handler)
@@ -142,10 +140,10 @@ class ToolLifecycle:
             try:
                 r = await handler(event, current)
             except Exception as exc:  # pragma: no cover - fail-open
-                logging.getLogger(__name__).warning(
-                    "Tool event handler %s for %s failed: %s",
-                    getattr(handler, "__name__", repr(handler)), event, exc,
-                    exc_info=True,
+                self._on_warning(
+                    f"Tool event handler {getattr(handler, '__name__', repr(handler))} "
+                    f"for {event} failed: {exc}",
+                    exc,
                 )
                 continue
             if isinstance(r, dict):

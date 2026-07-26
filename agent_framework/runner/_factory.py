@@ -1,10 +1,7 @@
 """Init-time factories, lifecycle, and discovery for AgentRunner."""
 from __future__ import annotations
 
-# TODO: 移除 logging。Agent 框架层不应包含业务无关的日志输出；
-#       异常应直接抛出或交给上层/Extension 处理。
 import importlib.util
-import logging
 import os
 import tempfile
 from pathlib import Path
@@ -58,7 +55,7 @@ async def ensure_tool_lifecycle(self):
 
     if self._tool_lifecycle is None:
         if self._raw_tools or self._extensions:
-            self._tool_lifecycle = ToolLifecycle()
+            self._tool_lifecycle = ToolLifecycle(on_warning=self._on_warning)
         else:
             self._tool_lifecycle_initialized = True
             return None
@@ -82,10 +79,9 @@ async def ensure_tool_lifecycle(self):
         try:
             sources = await register()
         except Exception as exc:  # pragma: no cover - fail-open
-            logging.getLogger(__name__).warning(
-                "Extension %s register_tool_sources failed: %s",
-                type(ext).__name__, exc,
-                exc_info=True,
+            self._on_warning(
+                f"Extension {type(ext).__name__} register_tool_sources failed: {exc}",
+                exc,
             )
             continue
         for src in sources or []:
@@ -115,10 +111,7 @@ async def trigger_compaction(self, session_id: str) -> None:
             boundary_seq=boundary_seq,
         )
     except Exception as exc:  # pragma: no cover - fail-open
-        logging.getLogger(__name__).warning(
-            "Compaction failed for session %s: %s", session_id, exc,
-            exc_info=True,
-        )
+        self._on_warning(f"Compaction failed for session {session_id}: {exc}", exc)
 
 
 def discover_extensions(paths: list[str]) -> list:
