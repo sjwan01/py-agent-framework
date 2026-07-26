@@ -20,12 +20,10 @@ DEEPSEEK_OFFICIAL_URL = "https://api.deepseek.com"
 
 
 def build_model(self):
-    """构建 LLM 模型实例。
+    """从 Settings 构建 LLM 模型实例。
 
-    优先级：
-    1. 如果 AgentRunner 构造时传入了 model，直接用；
-    2. 否则根据 settings.llm_base_url 自动选择 provider，然后
-       用 settings.llm_model_id 创建 OpenAIChatModel。
+    _model 参数是测试注入通道（不对外暴露）。生产环境从
+    settings.llm_base_url 自动选择 provider。
     """
     if self._model is not None:
         return self._model

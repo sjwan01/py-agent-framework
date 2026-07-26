@@ -67,8 +67,8 @@ class AgentRunner:
         config: AgentConfig,
         *,
         session_manager: SessionManager | None = None,
-        model=None,
         tools: list = (),
+        _model=None,
         tool_lifecycle=None,
         context_manager=None,
         extensions: list | None = None,
@@ -91,8 +91,8 @@ class AgentRunner:
         self._config = config
         # 会话持久化：优先用注入的，否则自动选 PG 或 SQLite
         self._session_manager = session_manager or self._default_session_manager()
-        # LLM 模型：注入的或从 settings 自动构建
-        self._model = model
+        # LLM 模型（内部使用——测试注入 TestModel 的通道，不对外暴露）
+        self._model = _model
         # 用户直接传入的工具（无 ToolLifecycle 包装）
         self._raw_tools = list(tools)
         # 工具生命周期管理器（懒初始化，首次 run 时才注册）
