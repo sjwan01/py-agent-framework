@@ -1,4 +1,10 @@
-"""Runtime helpers for AgentRunner."""
+"""Runtime helpers for AgentRunner.
+
+供 _agent.py 中的 AgentRunner 类通过类属性绑定调用（如：
+_fire = _internals.fire）。这些函数的第一个参数 `self` 就是
+AgentRunner 实例本身，所以函数内部可以直接访问 self._settings、
+self._extensions 等属性。
+"""
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
@@ -8,18 +14,24 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.deepseek import DeepSeekProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
+# 如果用户配的 base_url 正好是 DeepSeek 官方 API 地址，自动切换
+# 为 DeepSeekProvider；其他所有 URL 默认用 OpenAIProvider。
 DEEPSEEK_OFFICIAL_URL = "https://api.deepseek.com"
 
 
 def build_model(self):
-    """Return the model override or build a provider-aware model from settings.
+    """构建 LLM 模型实例。
 
-    Provider is chosen based on ``llm_base_url``: the official DeepSeek API
-    URL selects ``DeepSeekProvider``; everything else uses ``OpenAIProvider``.
+    优先级：
+    1. 如果 AgentRunner 构造时传入了 model，直接用；
+    2. 否则根据 settings.llm_base_url 自动选择 provider，然后
+       用 settings.llm_model_id 创建 OpenAIChatModel。
     """
     if self._model is not None:
         return self._model
 
+    # 自动识别 DeepSeek：官方 API 地址走 DeepSeekProvider，
+    # 其余（包括本地 vLLM、DashScope 等）全部走 OpenAIProvider。
     if self._settings.llm_base_url == DEEPSEEK_OFFICIAL_URL:
         provider = DeepSeekProvider(api_key=self._settings.llm_api_key)
     else:
@@ -32,19 +44,28 @@ def build_model(self):
 
 
 def messages_to_persist(original_history: list, all_messages: list) -> list:
-    """Return messages that should be persisted for this turn.
+    """计算本轮应该存入 DB 的消息（纯差集）。
 
-    Pydantic AI's ``result.new_messages()`` intentionally excludes any
-    message passed in ``message_history``.  V2 extensions may inject
-    messages into ``message_history`` during ``CONTEXT_PREPARE`` or
-    ``BEFORE_AGENT_RUN``; those messages must survive across turns, so
-    they must be persisted.  There is no SDK primitive that exposes
-    "messages added by the caller to message_history", so we compute the
-    delta manually against the originally loaded history.
+    Pydantic AI 的 result.new_messages() 会把 Extension 在
+    BEFORE_AGENT_RUN 中注入到 message_history 的消息当作"旧历史"
+    而排除。但 V2 需要这些注入消息也被持久化，以便下一轮加载时
+    能恢复。SDK 没提供区分"原始加载历史"和"Extension 注入消息"
+    的原语，所以这里手动算差集。
+
+    差集逻辑：
+    1. 先用 id() 做快速身份判断——Pydantic AI 不会深拷贝传入的
+       message_history，所以同一个对象 id 不变。
+    2. 如果消息被拷贝了（id 变了），退化为按内容键去重——比较
+       (kind, run_id, parts摘要)。
     """
+    # 第一层：按 Python 对象 id 过滤。
     original_ids = {id(m) for m in original_history}
 
     def _key(m) -> tuple:
+        """Fallback：构造一条消息的稳定内容键。
+
+        当对象被拷贝导致 id 不同时，用这个键来判断是不是同一条消息。
+        """
         kind = "request" if isinstance(m, ModelRequest) else (
             "response" if isinstance(m, ModelResponse) else type(m).__name__
         )
@@ -73,7 +94,14 @@ def messages_to_persist(original_history: list, all_messages: list) -> list:
 async def notify_streamers(
     streamers: list, event: str, data: dict, pending: list
 ) -> None:
-    """Forward an event to streaming extensions and collect yielded chunks."""
+    """将运行时事件推给所有流式 Extension，收集它们 yield 的 chunks。
+
+    流式 Extension 的 on_agent_runner_event_stream 方法是一个 async
+    generator，它的 yield 值被追加到 pending 列表中，供 run_stream()
+    本体在合适的时机 drain（yield 给外部消费者）。
+
+    无 on_agent_runner_event_stream 的 Extension 被静默跳过。
+    """
     for s in streamers:
         stream_fn = getattr(s, "on_agent_runner_event_stream", None)
         if stream_fn is None:
@@ -86,12 +114,21 @@ async def notify_streamers(
 
 
 async def drain_pending(pending: list) -> AsyncIterator[dict]:
-    """Yield all chunks currently in ``pending`` and clear it."""
+    """逐条 yield pending 中的所有 chunks，同时清空列表。
+
+    用 async generator 实现，调用方用 async for 消费。每消费一条，
+    列表就短一截，直到为空。
+    """
     while pending:
         yield pending.pop(0)
 
 
 def build_capabilities(self) -> list:
+    """组装传给 Pydantic AI Agent 的 capabilities 列表。
+
+    用户配置的 capabilities（从 AgentConfig 来）排前面，
+    框架自己的 Hooks 在外面由调用方追加进列表。
+    """
     capabilities = list(self._config.capabilities)
     if self._config.hooks is not None:
         capabilities.append(self._config.hooks)
@@ -99,11 +136,13 @@ def build_capabilities(self) -> list:
 
 
 async def fire(self, event: str, data: dict) -> dict:
-    """Fire event to all extensions in chain mode.
+    """链式（chain）模式分发事件给所有 Extension。
 
-    Each extension receives the current data (including any updates from
-    previous extensions). Non-None dict results are shallow-merged back so
-    later extensions see the accumulated output.
+    链式意味着：Extension A 收到数据 → 返回修改后的 dict →
+    Extension B 收到 A 修改后的数据 → 返回再次修改后的 dict →
+    最终结果返回给调用方。
+
+    如果某个 Extension 崩溃，记录 warning 后继续下一个。
     """
     current = dict(data)
     for ext in self._extensions:
@@ -123,10 +162,11 @@ async def fire(self, event: str, data: dict) -> dict:
 async def fire_notify(
     self, event: str, data: dict, *, cancel_key: str = "cancel"
 ) -> dict:
-    """Fire event in notify mode; any extension may request cancellation.
+    """通知（notify）模式分发事件给所有 Extension。
 
-    All extensions receive the same read-only snapshot. If any extension
-    returns ``{cancel_key: True}`` the aggregate result is ``{cancel_key: True}``.
+    与链式不同：所有 Extension 收到的是同一个只读快照，互相不看到
+    彼此的修改。支持"取消"语义：只要有任意一个 Extension 返回
+    {cancel_key: True}，最终结果就是 {cancel_key: True}。
     """
     snapshot = dict(data)
     cancelled = False
@@ -145,6 +185,11 @@ async def fire_notify(
 
 
 async def get_tools(self) -> list:
+    """获取本轮 Agent 应使用的工具列表。
+
+    优先走 ToolLifecycle（如果 Extension 注册了工具来源则走链式注册），
+    没有 ToolLifecycle 时才回退到构造时传入的 raw tools。
+    """
     lifecycle = await self._ensure_tool_lifecycle()
     if lifecycle is not None:
         return lifecycle.get_for_scope(self._scope)

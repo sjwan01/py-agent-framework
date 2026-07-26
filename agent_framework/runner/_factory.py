@@ -1,4 +1,9 @@
-"""Init-time factories, lifecycle, and discovery for AgentRunner."""
+"""Init-time factories, lifecycle, and discovery for AgentRunner.
+
+这个模块包含 AgentRunner 的初始化/工厂方法、工具注册、compaction
+触发、和 Extension 自动发现。所有函数的第一个参数 `self` 都是
+AgentRunner 实例。
+"""
 from __future__ import annotations
 
 import importlib.util
@@ -13,8 +18,10 @@ from agent_framework.tools import LocalToolSource, ToolLifecycle
 from agent_framework.types import ToolLifecycleEvent
 
 
+# ── 工厂函数（__init__ 时的默认值创建）───────────────────────
+
 def default_context_manager(self) -> ContextManager | None:
-    """Create a default ContextManager using the configured context window."""
+    """创建默认的 ContextManager，参数全部来自 Settings。"""
     return ContextManager(
         context_window_cap=self._settings.context_window,
         low_watermark_ratio=self._settings.low_watermark_ratio,
@@ -25,14 +32,23 @@ def default_context_manager(self) -> ContextManager | None:
 
 
 def default_compaction_summarizer(self):
-    """Create a default Harness-backed summarizer if a compaction model is configured."""
+    """创建 Harness 压缩总结器。
+
+    如果 Settings 配置了 compaction_model_id，自动创建；
+    否则返回 None（压缩时用硬编码占位字符串）。
+    """
     if self._settings.compaction_model_id:
         return HarnessSummarizer(self._settings)
     return None
 
 
 def default_session_manager(self):
-    """Pick Postgres if configured, otherwise SQLite (temp file by default), otherwise single-turn."""
+    """选择 SessionManager 适配器。
+
+    优先级：Postgres（如果配了 postgres_url）→ SQLite（临时文件）。
+
+    SQLite 临时文件在 AgentRunner 进程退出时自动删除。
+    """
     if self._settings.postgres_url:
         return PostgresSessionManager(
             pg_url=self._settings.postgres_url,
@@ -43,16 +59,27 @@ def default_session_manager(self):
     if db_path is None:
         fd, db_path = tempfile.mkstemp(suffix=".db")
         os.close(fd)
-    return LocalSessionManager(
-        db_path=db_path,
-    )
+    return LocalSessionManager(db_path=db_path)
 
+
+# ── 工具注册（懒初始化，首次 run 时调用）─────────────────────
 
 async def ensure_tool_lifecycle(self):
-    """Lazily build ToolLifecycle and register extension sources / raw tools."""
+    """懒初始化 ToolLifecycle，注册所有来源的工具。
+
+    这个函数在第一次 run() / run_stream() 时被调用，之后不再执行。
+    注册顺序：
+    1. 创建 ToolLifecycle 实例
+    2. 把 Extension 的 on_tool_event handler 注册到所有工具事件
+    3. 注册构造时传的 raw tools（作为 LocalToolSource）
+    4. 调用每个 Extension 的 register_tool_sources()，注册它们的
+       ToolSource（Local/MCP/Subagent）
+    """
+    # 已经初始化过，直接返回
     if self._tool_lifecycle_initialized:
         return self._tool_lifecycle
 
+    # 首次创建：如果没有 tools 也没有 extensions，不需要 ToolLifecycle
     if self._tool_lifecycle is None:
         if self._raw_tools or self._extensions:
             self._tool_lifecycle = ToolLifecycle(on_warning=self._on_warning)
@@ -60,8 +87,8 @@ async def ensure_tool_lifecycle(self):
             self._tool_lifecycle_initialized = True
             return None
 
-    # Subscribe extension tool event handlers before registering sources so
-    # they can influence conflicts such as TOOL_CONFLICT.
+    # 先订阅 Extension 的工具事件处理器（register 之前订阅，这样
+    # TOOL_CONFLICT 等事件在注册时就能被 Extension 拦截处理）
     for ext in self._extensions:
         handler = getattr(ext, "on_tool_event", None)
         if handler is None:
@@ -69,9 +96,12 @@ async def ensure_tool_lifecycle(self):
         for event in ToolLifecycleEvent:
             self._tool_lifecycle.on(event, handler)
 
+    # 注册构造时传的 raw tools
     if self._raw_tools:
         await self._tool_lifecycle.add_source(LocalToolSource(self._raw_tools))
 
+    # 调用每个 Extension 的 register_tool_sources()
+    # Extension 可以在这里返回 LocalToolSource、MCPServerSource 等
     for ext in self._extensions:
         register = getattr(ext, "register_tool_sources", None)
         if register is None:
@@ -91,12 +121,27 @@ async def ensure_tool_lifecycle(self):
     return self._tool_lifecycle
 
 
+# ── Compaction 触发 ──────────────────────────────────────────
+
 async def trigger_compaction(self, session_id: str) -> None:
+    """异步压缩当前 session 的历史消息。
+
+    在 _finalize_run 中通过 asyncio.create_task 触发，不阻塞这一轮
+    的响应。流程：
+    1. 取当前最大的 message_seq（这就是压缩边界——该 seq 及之前的
+       全部消息都被压缩覆盖）
+    2. load_history（protect_turns=0，如有旧的 compaction 摘要会
+       被加载）→ 全部消息
+    3. summarizer 总结全部消息
+    4. 把摘要写入 compactions 表
+    """
     try:
+        # 取 raw 最大值，不受 compaction 表影响
         boundary_seq = await self._session_manager.get_max_message_seq(session_id)
         if boundary_seq < 0:
             return
 
+        # protect_turns=0 → 永远直接返回摘要 + 全量消息
         messages = await self._session_manager.load_history(session_id)
 
         summarizer = self._compaction_summarizer
@@ -114,8 +159,17 @@ async def trigger_compaction(self, session_id: str) -> None:
         self._on_warning(f"Compaction failed for session {session_id}: {exc}", exc)
 
 
+# ── Extension 自动发现 ───────────────────────────────────────
+
 def discover_extensions(paths: list[str]) -> list:
-    """Discover Extension implementations from Python files in the given paths."""
+    """从给定目录扫描 Python 文件，自动发现 Extension 实现。
+
+    规则：
+    - 跳过以 _ 开头的文件名
+    - 找到实现了 on_agent_runner_event 方法的类
+    - 跳过 Extension 基类本身
+    - 用空构造函数实例化（所以 Extension 必须支持无参构造）
+    """
     extensions = []
     for path_str in paths:
         p = Path(path_str)
@@ -130,6 +184,7 @@ def discover_extensions(paths: list[str]) -> list:
                 spec.loader.exec_module(mod)
                 for attr_name in dir(mod):
                     attr = getattr(mod, attr_name)
+                    # 有 on_agent_runner_event 方法的类 → Extension 实例
                     if isinstance(attr, type) and hasattr(attr, "on_agent_runner_event"):
                         if attr_name != "Extension":
                             try:
