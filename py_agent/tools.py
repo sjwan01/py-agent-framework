@@ -117,7 +117,7 @@ class ToolLifecycle:
         self._handlers.setdefault(event, []).append(handler)
 
     @staticmethod
-    async def _default_conflict_handler(event: str, data: dict) -> dict | None:
+    async def _default_conflict_handler(event: str, data: dict[str, Any]) -> dict[str, Any] | None:
         """Built-in dedup: local tools win over MCP tools."""
         if event != ToolLifecycleEvent.TOOL_CONFLICT:
             return None

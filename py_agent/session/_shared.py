@@ -10,7 +10,7 @@ from py_agent.types import MessageRole
 _MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)
 
 
-def _infer_role(msg) -> MessageRole:
+def _infer_role(msg: ModelMessage) -> MessageRole:
     """根据消息类型和第一个 part 推断角色，写入 DB 的 role 列。
 
     这只是标记用途，不影响反序列化后的消息对象本身。

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
@@ -13,7 +14,7 @@ from py_agent.session._shared import _is_turn_start
 class PreparedContext(BaseModel):
     """ContextManager.prepare() 的输出。"""
 
-    messages: list = Field(default_factory=list)
+    messages: list[Any] = Field(default_factory=list)
     needs_compaction: bool = False
     tokens_used: int = 0
 

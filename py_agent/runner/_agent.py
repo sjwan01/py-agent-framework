@@ -271,8 +271,8 @@ class AgentRunner:
         output: str,
         needs_compaction: bool,
         *,
-        streamers: list | None = None,
-        pending: list | None = None,
+        streamers: list[Any] | None = None,
+        pending: list[Any] | None = None,
     ) -> AsyncIterator[dict]:
         """run() / run_stream() 共享的 run 后收尾。
 

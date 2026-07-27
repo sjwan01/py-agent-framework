@@ -20,12 +20,20 @@ Hooks 的三个阶段（按执行顺序）：
 """
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic_ai.capabilities import Hooks
 
 from py_agent.types import AgentRunnerEvent
 
 
-def build_hooks(self, session_id: str, *, pending=None, streamers=None):
+def build_hooks(
+    self,
+    session_id: str,
+    *,
+    pending: list[Any] | None = None,
+    streamers: list[Any] | None = None,
+):
     """构建 Pydantic AI Hooks 实例。
 
     self   — AgentRunner 实例（通过类属性绑定传入）
