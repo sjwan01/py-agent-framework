@@ -235,7 +235,7 @@ class AgentRunner:
         hooks = self._build_hooks(session_id, pending=pending, streamers=streamers)
 
         # 组装 capabilities 列表
-        capabilities = self._build_capabilities() or []
+        capabilities = self._build_capabilities()
         if hooks not in capabilities:
             capabilities.append(hooks)
 
