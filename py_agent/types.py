@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Awaitable
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Protocol
 
 
 # ── SessionManager (external seam) ────────────────────────────────────
@@ -30,7 +30,7 @@ class SessionManager(ABC):
 # ── Extension Protocol ────────────────────────────────────────────────
 
 class Extension(Protocol):
-    async def register_tool_sources(self) -> list[Any]: ...
+    async def register_tool_sources(self) -> list[ToolSource]: ...
     async def on_tool_event(self, event: str, data: dict) -> dict | None: ...
     async def on_agent_runner_event(self, event: str, data: dict) -> dict | None: ...
     async def on_agent_runner_event_stream(
