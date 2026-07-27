@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pydantic import BaseModel, Field
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
-from agent_framework.session._shared import _is_turn_start
+from py_agent.session._shared import _is_turn_start
 
 
 class PreparedContext(BaseModel):

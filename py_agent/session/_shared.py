@@ -4,7 +4,7 @@ from __future__ import annotations
 from pydantic import TypeAdapter
 from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
 
-from agent_framework.types import MessageRole
+from py_agent.types import MessageRole
 
 # DB 按"每行一条消息"存储，不是整个消息列表，所以用单消息 TypeAdapter。
 _MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)

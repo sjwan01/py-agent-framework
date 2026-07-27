@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from pydantic_ai.capabilities import Hooks
 
-from agent_framework.types import AgentRunnerEvent
+from py_agent.types import AgentRunnerEvent
 
 
 def build_hooks(self, session_id: str, *, pending=None, streamers=None):

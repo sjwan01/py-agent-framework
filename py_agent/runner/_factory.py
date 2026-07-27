@@ -5,8 +5,8 @@
 """
 from __future__ import annotations
 
-from agent_framework.tools import LocalToolSource, ToolLifecycle
-from agent_framework.types import ToolLifecycleEvent
+from py_agent.tools import LocalToolSource, ToolLifecycle
+from py_agent.types import ToolLifecycleEvent
 
 
 # ── 工具注册（懒初始化，首次 run 时调用）─────────────────────

@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic_ai import Tool as PydanticTool
 
-from agent_framework.types import (
+from py_agent.types import (
     ToolLifecycleEvent,
     ToolSource,
     ToolEventHandler,

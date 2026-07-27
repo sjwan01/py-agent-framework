@@ -7,8 +7,8 @@ from uuid import uuid4
 import aiosqlite
 import json
 
-from agent_framework.session._shared import _infer_role, _is_turn_start, _MessageAdapter
-from agent_framework.types import SessionManager
+from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
+from py_agent.types import SessionManager
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from datetime import datetime, timezone
 

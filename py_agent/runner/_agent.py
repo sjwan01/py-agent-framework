@@ -23,20 +23,20 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from agent_framework.models import (
+from py_agent.models import (
     ContextManagerConfig,
     RunResult,
     SummarizerConfig,
 )
-from agent_framework._compaction import HarnessSummarizer
-from agent_framework.context import BaselineState, ContextManager, PreparedContext
-from agent_framework.session import SingleTurnSessionManager
-from agent_framework.types import (
+from py_agent._compaction import HarnessSummarizer
+from py_agent.context import BaselineState, ContextManager, PreparedContext
+from py_agent.session import SingleTurnSessionManager
+from py_agent.types import (
     SessionManager,
     AgentRunnerEvent,
 )
 
-from agent_framework.runner import _factory, _hooks, _internals
+from py_agent.runner import _factory, _hooks, _internals
 
 # Pydantic AI 支持的 thinking 深度级别。无效值会被忽略并回退。
 _VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
