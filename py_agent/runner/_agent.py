@@ -29,7 +29,7 @@ from py_agent.models import (
     SummarizerConfig,
 )
 from py_agent._compaction import HarnessSummarizer
-from py_agent.context import BaselineState, ContextManager, PreparedContext
+from py_agent.context import BaselineState, ContextManager
 from py_agent.session import SingleTurnSessionManager
 from py_agent.types import (
     SessionManager,
