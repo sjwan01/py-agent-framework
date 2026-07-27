@@ -6,6 +6,3 @@ __pycache__/
 *.db
 .DS_Store
 tests/
-docs/
-.scratch/
-CONTEXT.md
