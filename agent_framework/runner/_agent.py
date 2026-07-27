@@ -75,7 +75,7 @@ class AgentRunner:
         system_prompt: str = "",
         thinking_enabled: bool = True,
         thinking_level: str | None = None,
-        extensions: list | None = None,
+        extensions: list[Any] | None = None,
         tools: list[Any] | tuple[()] = (),
         session_manager: SessionManager | None = None,
         context_manager_config: ContextManagerConfig | None = None,

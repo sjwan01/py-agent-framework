@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from pydantic_ai.messages import ModelRequest, SystemPromptPart
+from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 from pydantic_ai_harness.compaction import SummarizingCompaction
 
@@ -15,11 +16,11 @@ class HarnessSummarizer:
     def __init__(
         self,
         *,
-        model,
+        model: Model,
         max_output_tokens: int | None = None,
         summary_prompt: str | None = None,
     ):
-        kwargs = dict(
+        kwargs: dict[str, Any] = dict(
             model=model,
             max_tokens=max_output_tokens,
             max_messages=1,
