@@ -18,7 +18,7 @@ class ContextManager:
         high_watermark_ratio: float = 0.75,
         protect_turns: int = 5,
         truncate_chars: int = 1_000,
-        context_window_cap: int | None = None,
+        context_window_cap: int = 128_000,
     ):
         self._low = low_watermark_ratio
         self._high = high_watermark_ratio
@@ -43,7 +43,7 @@ class ContextManager:
             if diff:
                 messages = _inject_diff(messages, diff)
 
-        context_cap = self._context_window_cap or 128_000
+        context_cap = self._context_window_cap
         low_mark = context_cap * self._low
         high_mark = context_cap * self._high
 

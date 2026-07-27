@@ -2,8 +2,8 @@
 
 供 _agent.py 中的 AgentRunner 类通过类属性绑定调用（如：
 _fire = _internals.fire）。这些函数的第一个参数 `self` 就是
-AgentRunner 实例本身，所以函数内部可以直接访问 self._settings、
-self._extensions 等属性。
+AgentRunner 实例本身，所以函数内部可以直接访问 self._extensions、
+self._session_manager 等属性。
 """
 from __future__ import annotations
 
@@ -95,12 +95,12 @@ async def drain_pending(pending: list) -> AsyncIterator[dict]:
 def build_capabilities(self) -> list:
     """组装传给 Pydantic AI Agent 的 capabilities 列表。
 
-    用户配置的 capabilities（从 AgentConfig 来）排前面，
-    框架自己的 Hooks 在外面由调用方追加进列表。
+    用户配置的 capabilities 排前面，框架自己的 Hooks 在外面由
+    调用方追加进列表。
     """
-    capabilities = list(self._config.capabilities)
-    if self._config.hooks is not None:
-        capabilities.append(self._config.hooks)
+    capabilities = list(self._capabilities)
+    if self._hooks is not None:
+        capabilities.append(self._hooks)
     return capabilities
 
 

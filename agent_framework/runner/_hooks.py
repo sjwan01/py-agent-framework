@@ -40,7 +40,7 @@ def build_hooks(self, session_id: str, *, pending=None, streamers=None):
 
     # 本轮工具调用计数器（nonlocal 变量，三个闭包共享）
     tool_calls = 0
-    max_tool_calls = self._settings.max_tool_calls_per_turn
+    max_tool_calls = self._max_tool_calls_per_turn
 
     # ── 阶段 1：工具调用前 ──────────────────────────────────
     @hooks.on.before_tool_execute

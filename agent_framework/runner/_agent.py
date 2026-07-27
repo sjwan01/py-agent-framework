@@ -17,14 +17,25 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from typing import Callable
+from typing import Any, Callable, cast
 
 from pydantic_ai import Agent
+from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
-from agent_framework.models import AgentConfig, RunResult, BaselineState
-from agent_framework.settings import Settings
-from agent_framework.types import CompactionSummarizer, SessionManager, AgentRunnerEvent
+from agent_framework.models import (
+    BaselineState,
+    ContextManagerConfig,
+    RunResult,
+    SummarizerConfig,
+)
+from agent_framework.compaction import HarnessSummarizer
+from agent_framework.context import ContextManager
+from agent_framework.session import SingleTurnSessionManager
+from agent_framework.types import (
+    SessionManager,
+    AgentRunnerEvent,
+)
 
 from agent_framework.runner import _factory, _hooks, _internals
 
@@ -52,9 +63,6 @@ class AgentRunner:
     _get_tools = _internals.get_tools
 
     # --- 来自 _factory.py（初始化/生命周期/发现）---
-    _default_session_manager = _factory.default_session_manager
-    _default_context_manager = _factory.default_context_manager
-    _default_compaction_summarizer = _factory.default_compaction_summarizer
     _ensure_tool_lifecycle = _factory.ensure_tool_lifecycle
     _trigger_compaction = _factory.trigger_compaction
 
@@ -62,55 +70,85 @@ class AgentRunner:
 
     def __init__(
         self,
-        settings: Settings,
-        config: AgentConfig,
-        model,                         # 必需：调用方自己组装好的 model
+        model: Model,
         *,
-        session_manager: SessionManager | None = None,
-        tools: list = (),
-        tool_lifecycle=None,
-        context_manager=None,
+        system_prompt: str = "",
+        thinking_enabled: bool = True,
+        thinking_level: str | None = None,
         extensions: list | None = None,
-        scope: str = "main",
-        compaction_summarizer: CompactionSummarizer | None = None,
-        compaction_model=None,          # None → 复用主 model
+        tools: list[Any] | tuple[()] = (),
+        session_manager: SessionManager | None = None,
+        context_manager_config: ContextManagerConfig | None = None,
+        summarizer_config: SummarizerConfig | None = None,
+        max_tool_calls_per_turn: int = 5,
+        parallel_tool_calls: bool = False,
+        hooks: Any = None,
+        capabilities: list[Any] | None = None,
         on_warning: Callable[[str, Exception | None], None] | None = None,
     ):
         """构造 AgentRunner。
 
-        所有参数都有默认值。最简单的用法只需 settings + config：
+        最简单的用法只需 model：
 
-            runner = AgentRunner(settings=Settings(), config=AgentConfig())
+            runner = AgentRunner(model=my_model)
 
-        其他参数都是可选注入点：model、session_manager、extensions 等。
-        不传就用默认实现（SQLite、OpenAIProvider、无 extension）。
+        其他参数都是可选的：system_prompt、extensions、tools、
+        session_manager、context_manager_config、summarizer_config 等。
+        不传就用默认值（空 system prompt、SingleTurn session、
+        无 context 管理、无 compaction）。
         """
-        # 框架内部 warning 的处理方式。默认 no-op；测试可注入 callback 捕获。
-        self._on_warning = on_warning or (lambda msg, exc=None: None)
-        self._settings = settings
-        self._config = config
-        # 会话持久化：优先用注入的，否则自动选 PG 或 SQLite
-        self._session_manager = session_manager or self._default_session_manager()
-        # LLM 模型：调用方传入
+        def _noop(msg: str, exc: Exception | None = None) -> None:
+            pass
+
         self._model = model
-        # 用户直接传入的工具（无 ToolLifecycle 包装）
-        self._raw_tools = list(tools)
-        # 工具生命周期管理器（懒初始化，首次 run 时才注册）
-        self._tool_lifecycle = tool_lifecycle
-        self._tool_lifecycle_initialized = False
-        # 上下文管理器（截断、baseline freezing、diff 注入）
-        self._context_manager = context_manager or self._default_context_manager()
-        # Extension 列表
+        self._system_prompt = system_prompt
+        self._thinking_enabled = thinking_enabled
+        self._thinking_level = thinking_level
+        self._scope = "main"
+
         self._extensions = extensions or []
-        # 工具 scope（"main" 或 "subagent"），传给 ToolLifecycle.get_for_scope
-        self._scope = scope
-        # Compaction 总结器
-        # Compaction 总结器（始终有值，缺失配置回退到主 LLM）
-        # Compaction 总结器（始终有值，缺失配置回退到主 LLM）
-        self._compaction_summarizer = (
-            compaction_summarizer
-            or self._default_compaction_summarizer(compaction_model or model)
+
+        self._raw_tools = list(tools)
+        self._tool_lifecycle = None
+        self._tool_lifecycle_initialized = False
+
+        self._session_manager = session_manager or SingleTurnSessionManager()
+
+        self._context_manager: ContextManager | None = None
+        if context_manager_config is not None:
+            self._context_manager = ContextManager(
+                context_window_cap=context_manager_config.context_window,
+                low_watermark_ratio=context_manager_config.low_watermark_ratio,
+                high_watermark_ratio=context_manager_config.high_watermark_ratio,
+                protect_turns=context_manager_config.protect_turns,
+                truncate_chars=context_manager_config.truncate_tool_result_chars,
+            )
+        self._protect_turns = (
+            context_manager_config.protect_turns if context_manager_config else 5
         )
+
+        self._compaction_summarizer: HarnessSummarizer | None = None
+        if summarizer_config is not None:
+            context_window = (
+                context_manager_config.context_window
+                if context_manager_config
+                else 128_000
+            )
+            default_max = int(min(32_768, max(context_window * 0.1, 8_192)))
+            self._compaction_summarizer = HarnessSummarizer(
+                model=summarizer_config.model or model,
+                max_output_tokens=summarizer_config.max_output_tokens
+                or default_max,
+                summary_prompt=summarizer_config.summary_prompt,
+            )
+
+        self._max_tool_calls_per_turn = max_tool_calls_per_turn
+        self._parallel_tool_calls = parallel_tool_calls
+
+        self._hooks = hooks
+        self._capabilities = capabilities or []
+
+        self._on_warning = on_warning or _noop
 
     # ── run() 和 run_stream() 的共享方法 ─────────────────────
 
@@ -135,30 +173,28 @@ class AgentRunner:
         # SESSION_START 事件
         await self._fire(AgentRunnerEvent.SESSION_START, {"session_id": session_id})
 
-        if self._context_manager is None:
-            raise RuntimeError("ContextManager is not configured")
-
         # 第二步：加载历史消息（已含 compaction 判定逻辑）
         history = await self._session_manager.load_history(
-            session_id, protect_turns=self._settings.protect_turns
+            session_id, protect_turns=self._protect_turns
         )
         # 保存原始副本——之后 Extension 会在 history 上注入消息，
         # 我们需要 original_history 来计算本轮真正的新增消息
         original_history = list(history)
 
         # 第三步：ContextManager.prepare —— 截断、baseline diff 注入、
-        #         判定是否需要 compaction
+        #         判定是否需要 compaction（无 ContextManager 则跳过）
         needs_compaction = False
-        try:
-            prepared = await self._context_manager.prepare(
-                history,
-                system_prompt=self._config.instructions,
-                current_state=BaselineState(),
-            )
-            history = prepared.messages
-            needs_compaction = prepared.needs_compaction
-        except Exception as exc:  # pragma: no cover - fail-open
-            self._on_warning(f"ContextManager prepare failed: {exc}", exc)
+        if self._context_manager is not None:
+            try:
+                prepared = await self._context_manager.prepare(
+                    history,
+                    system_prompt=self._system_prompt,
+                    current_state=BaselineState(),
+                )
+                history = prepared.messages
+                needs_compaction = prepared.needs_compaction
+            except Exception as exc:  # pragma: no cover - fail-open
+                self._on_warning(f"ContextManager prepare failed: {exc}", exc)
 
         # 第四步：CONTEXT_PREPARE 事件（只读——Extension 的返回值被忽略，
         #          修改 messages 的唯一入口是下一步的 BEFORE_AGENT_RUN）
@@ -206,11 +242,11 @@ class AgentRunner:
 
         # 模型设置
         model_settings = ModelSettings(
-            parallel_tool_calls=self._settings.parallel_tool_calls,
+            parallel_tool_calls=self._parallel_tool_calls,
         )
         # thinking 配置
-        if self._settings.thinking_enabled:
-            level = self._settings.thinking_level
+        if self._thinking_enabled:
+            level = self._thinking_level
             if level is not None and level not in _VALID_THINKING_LEVELS:
                 self._on_warning(
                     f"Invalid thinking_level {level!r} ignored (valid: "
@@ -218,11 +254,11 @@ class AgentRunner:
                     None,
                 )
                 level = None
-            model_settings["thinking"] = level if level else True
+            model_settings["thinking"] = cast(Any, level if level is not None else True)
 
         return Agent(
             model=self._model,
-            instructions=self._config.instructions,
+            instructions=self._system_prompt,
             tools=await self._get_tools(),
             capabilities=capabilities or None,
             model_settings=model_settings,

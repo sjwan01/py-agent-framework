@@ -3,18 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
-
-
-class AgentConfig(BaseModel):
-    # 每轮注入 Agent 的 system prompt / instructions。
-    instructions: str = ""
-
-    # 可选的 pydantic_ai.capabilities.Hooks 实例。
-    hooks: Any = None
-
-    # 额外的 Pydantic AI capability 或 toolset。
-    capabilities: list[Any] = Field(default_factory=list)
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_ai.models import Model
 
 
 class RunResult(BaseModel):
@@ -51,3 +41,33 @@ class BaselineState(BaseModel):
 
     # 基线时刻的额外上下文条目（路径、标识等）。
     context: list[str] = Field(default_factory=list)
+
+
+class ContextManagerConfig(BaseModel):
+    """Configuration for context window truncation and watermark management.
+
+    When passed to ``AgentRunner``, a ``ContextManager`` is created internally.
+    When ``None``, context management is skipped entirely (single-turn mode).
+    """
+
+    context_window: int = 128_000
+    low_watermark_ratio: float = 0.6
+    high_watermark_ratio: float = 0.75
+    protect_turns: int = 5
+    truncate_tool_result_chars: int = 1_000
+
+
+class SummarizerConfig(BaseModel):
+    """Configuration for LLM-based context compaction via ``HarnessSummarizer``.
+
+    When passed to ``AgentRunner``, a ``HarnessSummarizer`` is created
+    internally and compaction is enabled. When ``None``, LLM summarization
+    is skipped.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    # Model used for summarization. None → fall back to the main agent model.
+    model: Model | None = None
+    max_output_tokens: int | None = None
+    summary_prompt: str | None = None

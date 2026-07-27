@@ -1,58 +1,12 @@
-"""Init-time factories, lifecycle, and discovery for AgentRunner.
+"""Lifecycle and discovery for AgentRunner.
 
-这个模块包含 AgentRunner 的初始化/工厂方法、工具注册、compaction
-触发、和 Extension 自动发现。所有函数的第一个参数 `self` 都是
-AgentRunner 实例。
+这个模块包含 AgentRunner 的工具注册、compaction 触发和 Extension
+自动发现。所有函数的第一个参数 `self` 都是 AgentRunner 实例。
 """
 from __future__ import annotations
 
-import os
-import tempfile
-
-from agent_framework.compaction import HarnessSummarizer
-from agent_framework.context import ContextManager
-from agent_framework.session import LocalSessionManager, PostgresSessionManager
 from agent_framework.tools import LocalToolSource, ToolLifecycle
 from agent_framework.types import ToolLifecycleEvent
-
-
-# ── 工厂函数（__init__ 时的默认值创建）───────────────────────
-
-def default_context_manager(self) -> ContextManager | None:
-    """创建默认的 ContextManager，参数全部来自 Settings。"""
-    return ContextManager(
-        context_window_cap=self._settings.context_window,
-        low_watermark_ratio=self._settings.low_watermark_ratio,
-        high_watermark_ratio=self._settings.high_watermark_ratio,
-        protect_turns=self._settings.protect_turns,
-        truncate_chars=self._settings.truncate_tool_result_chars,
-    )
-
-
-def default_compaction_summarizer(self, model):
-    """创建 Harness 压缩总结器，使用指定模型。"""
-    from agent_framework.compaction import HarnessSummarizer
-    return HarnessSummarizer(model=model, settings=self._settings)
-
-
-def default_session_manager(self):
-    """选择 SessionManager 适配器。
-
-    优先级：Postgres（如果配了 postgres_url）→ SQLite（临时文件）。
-
-    SQLite 临时文件在 AgentRunner 进程退出时自动删除。
-    """
-    if self._settings.postgres_url:
-        return PostgresSessionManager(
-            pg_url=self._settings.postgres_url,
-            pool_size=self._settings.pg_pool_size,
-            max_overflow=self._settings.pg_max_overflow,
-        )
-    db_path = self._settings.sqlite_path
-    if db_path is None:
-        fd, db_path = tempfile.mkstemp(suffix=".db")
-        os.close(fd)
-    return LocalSessionManager(db_path=db_path)
 
 
 # ── 工具注册（懒初始化，首次 run 时调用）─────────────────────
@@ -125,7 +79,7 @@ async def trigger_compaction(self, session_id: str) -> None:
        全部消息都被压缩覆盖）
     2. load_history（protect_turns=0，如有旧的 compaction 摘要会
        被加载）→ 全部消息
-    3. summarizer 总结全部消息
+    3. summarizer 总结全部消息（若为 None 则跳过 LLM 总结）
     4. 把摘要写入 compactions 表
     """
     try:
@@ -134,10 +88,12 @@ async def trigger_compaction(self, session_id: str) -> None:
         if boundary_seq < 0:
             return
 
+        summarizer = self._compaction_summarizer
+        if summarizer is None:
+            return  # 未配置 SummarizerConfig，跳过 LLM 压缩
+
         # protect_turns=0 → 永远直接返回摘要 + 全量消息
         messages = await self._session_manager.load_history(session_id)
-
-        summarizer = self._compaction_summarizer
         summary = await summarizer.summarize(messages)
 
         await self._session_manager.apply_compaction(

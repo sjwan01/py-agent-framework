@@ -27,15 +27,6 @@ class SessionManager(ABC):
     async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str: ...
 
 
-# ── CompactionSummarizer ──────────────────────────────────────────────
-
-class CompactionSummarizer(ABC):
-    """Abstract summarizer used by AgentRunner to compact old context."""
-
-    @abstractmethod
-    async def summarize(self, messages: list) -> str: ...
-
-
 # ── Extension Protocol ────────────────────────────────────────────────
 
 class Extension(Protocol):
@@ -145,7 +136,6 @@ ToolEventHandler = Callable[[str, dict], Awaitable[dict | None]]
 
 __all__ = [
     "SessionManager",
-    "CompactionSummarizer",
     "Extension",
     "ToolSource",
     "MessageRole",
