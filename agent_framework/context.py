@@ -4,10 +4,26 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timezone
 
+from pydantic import BaseModel, Field
 from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
 
-from agent_framework.models import PreparedContext, BaselineState
 from agent_framework.session._shared import _is_turn_start
+
+
+class PreparedContext(BaseModel):
+    """ContextManager.prepare() 的输出。"""
+
+    messages: list = Field(default_factory=list)
+    needs_compaction: bool = False
+    tokens_used: int = 0
+
+
+class BaselineState(BaseModel):
+    """基线时刻的 skill/tool/context 快照，用于 diff 注入。"""
+
+    skills: dict[str, str] = Field(default_factory=dict)
+    tools: dict[str, str] = Field(default_factory=dict)
+    context: list[str] = Field(default_factory=list)
 
 
 class ContextManager:

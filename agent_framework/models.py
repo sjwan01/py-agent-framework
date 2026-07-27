@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from pydantic_ai.models import Model
 
 
@@ -19,28 +19,6 @@ class RunResult(BaseModel):
 
     # Pydantic AI 用量统计（input/output token、tool 调用次数等）。
     usage: Any | None = None
-
-
-class PreparedContext(BaseModel):
-    # 准备好传入 Agent.message_history 的消息列表。
-    messages: list[Any] = Field(default_factory=list)
-
-    # 是否因超过高水位线而需要触发 compaction。
-    needs_compaction: bool = False
-
-    # 截断/清理后进入 Agent 的消息的估算 token 占用（chars ÷ 4 粗略估算）。
-    tokens_used: int = 0
-
-
-class BaselineState(BaseModel):
-    # 基线时刻的 skill 名 → description 快照。
-    skills: dict[str, str] = Field(default_factory=dict)
-
-    # 基线时刻的 tool 名 → description 快照。
-    tools: dict[str, str] = Field(default_factory=dict)
-
-    # 基线时刻的额外上下文条目（路径、标识等）。
-    context: list[str] = Field(default_factory=list)
 
 
 class ContextManagerConfig(BaseModel):

@@ -24,13 +24,12 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from agent_framework.models import (
-    BaselineState,
     ContextManagerConfig,
     RunResult,
     SummarizerConfig,
 )
-from agent_framework.compaction import HarnessSummarizer
-from agent_framework.context import ContextManager
+from agent_framework._compaction import HarnessSummarizer
+from agent_framework.context import BaselineState, ContextManager, PreparedContext
 from agent_framework.session import SingleTurnSessionManager
 from agent_framework.types import (
     SessionManager,
