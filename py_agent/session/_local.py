@@ -1,16 +1,16 @@
 """SQLite session 实现。"""
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import aiosqlite
-import json
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 
 from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from py_agent.types import SessionManager
-from pydantic_ai.messages import ModelRequest, UserPromptPart
-from datetime import datetime, timezone
 
 # ── SQLite 建表语句 ──────────────────────────────────────────────────
 # sessions 表：每个 session 一行，记录创建时间和自定义元数据。
