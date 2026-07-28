@@ -188,6 +188,10 @@ class AgentRunner:
         else:
             self._compaction_summarizer = None
 
+        if max_tool_calls_per_turn <= 0:
+            raise ValueError(
+                f"max_tool_calls_per_turn must be > 0, got {max_tool_calls_per_turn}"
+            )
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
         self._parallel_tool_calls = parallel_tool_calls
 
