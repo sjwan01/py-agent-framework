@@ -175,8 +175,8 @@ class AgentRunner:
         self._compaction_summarizer: HarnessSummarizer | None = None
         if summarizer_config is not None:
             context_window = (
-                context_manager_config.context_window
-                if context_manager_config
+                self._context_manager._context_window_cap
+                if self._context_manager
                 else 128_000
             )
             default_max = int(min(32_768, max(context_window * 0.1, 8_192)))
