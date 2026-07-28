@@ -222,8 +222,8 @@ class AgentRunner:
         self,
         session_id: str,
         *,
-        pending: list | None = None,
-        streamers: list | None = None,
+        pending: list[Any] | None = None,
+        streamers: list[Any] | None = None,
     ) -> Agent:
         """构造本轮要用的 Pydantic AI Agent。
 
