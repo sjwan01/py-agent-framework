@@ -87,16 +87,48 @@ class AgentRunner:
         capabilities: list[Any] | None = None,
         on_warning: Callable[[str, Exception | None], None] | None = None,
     ):
-        """Construct AgentRunner.
+        """Create an agent orchestrator.
 
-        Only ``model`` is required:
+        Only ``model`` is required. Everything else uses sensible defaults so the
+        minimal use case is a one-liner::
 
             runner = AgentRunner(model=my_model)
 
-        All other parameters are optional: ``system_prompt``, ``extensions``, ``tools``,
-        ``session_manager``, ``context_manager_config``, ``summarizer_config``, etc.
-        Defaults are an empty system prompt, ``SingleTurnSessionManager``,
-        no context management, and no compaction.
+        Args:
+            model: Pydantic AI model used for the agent's main conversation loop.
+            system_prompt: Instructions injected at the start of every turn.
+                Defaults to ``""``.
+            thinking_enabled: Enable Pydantic AI thinking mode for the main model.
+                Defaults to ``True``.
+            thinking_level: Thinking depth (``"minimal"``, ``"low"``, ``"medium"``,
+                ``"high"``, ``"xhigh"``). Invalid values are ignored with a warning.
+                Defaults to ``None`` (model default).
+            extensions: Objects implementing the ``Extension`` protocol, called at
+                init for tool registration and during each run for lifecycle hooks.
+                Defaults to ``None``.
+            tools: Raw callables or Pydantic AI ``Tool`` objects registered directly,
+                bypassing ``ToolLifecycle``. Defaults to ``()``.
+            session_manager: Backend for multi-turn persistence. ``None`` uses
+                ``SingleTurnSessionManager`` (every run is a fresh session). Pass
+                ``LocalSessionManager(db_path=...)`` or ``PostgresSessionManager(pg_url=...)``
+                for persistence.
+            context_manager_config: Configuration for automatic context window
+                truncation and compaction detection. ``None`` skips context
+                management entirely (no overhead for single-turn use).
+            summarizer_config: Configuration for LLM-based context compaction.
+                ``None`` disables compaction. When enabled but ``model`` is unset,
+                the main agent model is reused.
+            max_tool_calls_per_turn: Hard limit on tool invocations per turn.
+                The model receives a message and continues when exceeded.
+                Defaults to ``5``.
+            parallel_tool_calls: Allow the model to issue multiple tool calls
+                concurrently. Defaults to ``False``.
+            hooks: A Pydantic AI ``Hooks`` instance (or compatible capability)
+                appended to the agent's capabilities list. Defaults to ``None``.
+            capabilities: Additional Pydantic AI capabilities injected into the
+                agent. Defaults to ``None``.
+            on_warning: Callback for non-fatal errors (extension crashes,
+                compaction failures, etc.). Defaults to a no-op.
         """
         def _noop(msg: str, exc: Exception | None = None) -> None:
             pass
