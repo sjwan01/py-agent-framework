@@ -150,7 +150,10 @@ class AgentRunner:
         self._tool_lifecycle_initialized = False
 
         self._session_manager = session_manager or SingleTurnSessionManager()
+        is_multi = not isinstance(self._session_manager, SingleTurnSessionManager)
 
+        # context manager: explicit config → from config; multi-turn → defaults;
+        # single-turn → skip
         self._context_manager: ContextManager | None = None
         if context_manager_config is not None:
             self._context_manager = ContextManager(
@@ -160,10 +163,16 @@ class AgentRunner:
                 protect_turns=context_manager_config.protect_turns,
                 truncate_chars=context_manager_config.truncate_tool_result_chars,
             )
+        elif is_multi:
+            self._context_manager = ContextManager()
         self._protect_turns = (
-            context_manager_config.protect_turns if context_manager_config else 5
+            context_manager_config.protect_turns
+            if context_manager_config
+            else (5 if is_multi else 0)
         )
 
+        # summarizer: explicit config → from config; multi-turn → defaults
+        # (reuses main model); single-turn → skip
         self._compaction_summarizer: HarnessSummarizer | None = None
         if summarizer_config is not None:
             context_window = (
@@ -178,6 +187,8 @@ class AgentRunner:
                 or default_max,
                 summary_prompt=summarizer_config.summary_prompt,
             )
+        elif is_multi:
+            self._compaction_summarizer = HarnessSummarizer(model=model)
 
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
         self._parallel_tool_calls = parallel_tool_calls
