@@ -10,7 +10,7 @@ from enum import StrEnum
 from typing import Protocol
 
 
-# ── SessionManager (external seam) ────────────────────────────────────
+# SessionManager (external seam)
 
 class SessionManager(ABC):
     @abstractmethod
@@ -27,7 +27,7 @@ class SessionManager(ABC):
     async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str: ...
 
 
-# ── Extension Protocol ────────────────────────────────────────────────
+# Extension Protocol
 
 class Extension(Protocol):
     async def register_tool_sources(self) -> list[ToolSource]: ...
@@ -45,7 +45,7 @@ class Extension(Protocol):
             yield {}
 
 
-# ── ToolSource ─────────────────────────────────────────────────────────
+# ToolSource
 
 class ToolSource(ABC):
     @abstractmethod
@@ -62,44 +62,44 @@ class ToolSource(ABC):
         return "all"
 
 
-# ── Data enums ───────────────────────────────────────────────────────
+# Data enums
 
 class MessageRole(StrEnum):
-    """消息角色枚举，统一 DB schema 与 _infer_role 中的角色值。"""
+    """Message role enum used in the DB schema and by `_infer_role`."""
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
     UNKNOWN = "unknown"
 
 
-# ── Event enums ───────────────────────────────────────────────────────
+# Event enums
 #
-# ToolLifecycleEvent 发生在工具注册阶段（AgentRunner 初始化 ToolLifecycle 时）：
+# ToolLifecycleEvent fires while AgentRunner initializes ToolLifecycle:
 #
 #   _ensure_tool_lifecycle()
 #   ├── register_tool_sources / add_source
-#   │   ├── TOOL_DISCOVERED   # 工具源发现工具
-#   │   ├── TOOL_CONFLICT     # 同名工具冲突
-#   │   └── TOOL_REGISTERED   # 冲突解决后正式注册
-#   └── TOOL_REMOVED          # 被去重/冲突解决淘汰的工具
+#   │   ├── TOOL_DISCOVERED   # tool source discovers a tool
+#   │   ├── TOOL_CONFLICT     # name collision between tools
+#   │   └── TOOL_REGISTERED   # finalized registration after conflict resolution
+#   └── TOOL_REMOVED          # tools eliminated by deduplication/conflict resolution
 #
-# AgentRunnerEvent 发生在单次 run() / run_stream() 运行时。
+# AgentRunnerEvent fires during a single run() / run_stream() execution.
 #
 #   run() / run_stream()
 #   ├── SESSION_START
 #   ├── load_history
-#   ├── CONTEXT_PREPARE          # 只读：Extension 观察 ContextManager 输出
-#   ├── BEFORE_AGENT_RUN         # 可写：Extension 改 messages 的唯一入口
-#   ├── AGENT_START              # 只读：prompt + 最终进入 Agent 的 messages
+#   ├── CONTEXT_PREPARE          # read-only: Extension observes ContextManager output
+#   ├── BEFORE_AGENT_RUN         # writable: Extension's only entry point to modify messages
+#   ├── AGENT_START              # read-only: prompt + final messages entering the Agent
 #   │   ├── (Pydantic AI tool loop)
-#   │   │   ├── TOOL_START       # 日志/UI
-#   │   │   ├── TOOL_CALL        # 拦截：block / 改 args
-#   │   │   ├── TOOL_RESULT      # 拦截：改结果
-#   │   │   └── TOOL_END         # 日志/UI
-#   │   └── TOKEN_STREAM         # run_stream 时每个 token chunk
-#   ├── AGENT_END                # 只读：output + usage
-#   ├── SESSION_SAVE             # 可写：保存前改 delta_messages
-#   ├── COMPACTION_TRIGGER       # 若 ContextManager 标记得 compaction；可 cancel
+#   │   │   ├── TOOL_START       # log/UI
+#   │   │   ├── TOOL_CALL        # intercept: block / modify args
+#   │   │   ├── TOOL_RESULT      # intercept: modify result
+#   │   │   └── TOOL_END         # log/UI
+#   │   └── TOKEN_STREAM         # per-token chunk during run_stream
+#   ├── AGENT_END                # read-only: output + usage
+#   ├── SESSION_SAVE             # writable: modify delta_messages before persistence
+#   ├── COMPACTION_TRIGGER       # flagged by ContextManager; cancellable
 #   │   └── COMPACTION_APPLIED
 #   └── SESSION_END
 #
@@ -129,7 +129,7 @@ class AgentRunnerEvent(StrEnum):
     COMPACTION_APPLIED = "compaction_applied"
 
 
-# ── Event handler type ────────────────────────────────────────────────
+# Event handler type
 
 ToolEventHandler = Callable[[str, dict], Awaitable[dict | None]]
 

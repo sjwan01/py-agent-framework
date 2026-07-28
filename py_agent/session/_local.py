@@ -1,4 +1,4 @@
-"""SQLite session 实现。"""
+"""SQLite session implementation."""
 from __future__ import annotations
 
 import json
@@ -12,14 +12,14 @@ from pydantic_ai.messages import ModelRequest, UserPromptPart
 from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from py_agent.types import SessionManager
 
-# ── SQLite 建表语句 ──────────────────────────────────────────────────
-# sessions 表：每个 session 一行，记录创建时间和自定义元数据。
-# messages 表：每条消息一行，按 (session_id, message_seq) 索引。
-#   - entry_id：消息唯一标识，UUID。
-#   - message_seq：消息顺序号（从 0 开始递增）。
-#   - role：消息角色，user / assistant / tool。
-#   - content：消息的 JSON 字符串（由 _MessageAdapter 序列化）。
-# compactions 表：每次压缩一条记录，用 boundary_seq 标记压缩覆盖范围。
+# SQLite schema
+# sessions: one row per session, with creation time and custom metadata.
+# messages: one row per message, indexed by (session_id, message_seq).
+#   - entry_id: unique message identifier (UUID).
+#   - message_seq: monotonic sequence number starting at 0.
+#   - role: message role (user / assistant / tool).
+#   - content: JSON string serialized by _MessageAdapter.
+# compactions: one row per compaction, with boundary_seq marking the summarized range.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -49,23 +49,24 @@ CREATE TABLE IF NOT EXISTS compactions (
 
 
 class LocalSessionManager(SessionManager):
-    """SQLite 持久化，适合本地开发和测试。
+    """SQLite-backed multi-turn session.
 
-    每个 session 存在 ``sessions`` 表的一行，每条消息存在 ``messages`` 表的一行。
-    消息按 message_seq 排序加载，compaction 记录存在独立的 ``compactions`` 表。
+    Each session lives in one row of ``sessions``, each message in one row of
+    ``messages``. Messages are loaded ordered by ``message_seq``; compaction
+    records live in the separate ``compactions`` table.
     """
 
     def __init__(self, *, db_path: str):
-        # SQLite 文件路径。
+        # path to the SQLite database file
         self._db_path = db_path
-        # 避免每次连接都重新执行建表语句。
+        # avoid re-running schema creation on every connection
         self._schema_initialized = False
 
     @asynccontextmanager
     async def _connect(self):
-        """获取一个 SQLite 连接，首次连接时自动建表。"""
+        """Acquire a SQLite connection, creating tables on first connect."""
         db = await aiosqlite.connect(self._db_path)
-        # 让查询结果可以通过列名访问，例如 row["content"]。
+        # enable column access on rows, e.g. row["content"]
         db.row_factory = aiosqlite.Row
         if not self._schema_initialized:
             await db.executescript(SCHEMA)
@@ -76,10 +77,10 @@ class LocalSessionManager(SessionManager):
         finally:
             await db.close()
 
-    # ── SessionManager 接口实现 ─────────────────────────────────
+    # SessionManager interface implementation
 
     async def create_session(self, *, metadata: dict | None = None) -> str:
-        """在 sessions 表中插入一行，返回新 session_id。"""
+        """Insert a row into ``sessions`` and return the new ``session_id``."""
         sid = str(uuid4())
         async with self._connect() as db:
             await db.execute(
@@ -90,7 +91,7 @@ class LocalSessionManager(SessionManager):
         return sid
 
     async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str:
-        """确保 session 行存在：不存在则创建，存在则无操作。"""
+        """Ensure the session row exists, creating it if necessary."""
         async with self._connect() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO sessions (session_id, metadata) VALUES (?, ?)",
@@ -100,13 +101,15 @@ class LocalSessionManager(SessionManager):
         return session_id
 
     async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
-        """加载 session 消息。
+        """Load messages for the session.
 
-        先查 compaction：若无记录则加载全部；若有且 boundary 后攒够 protect_turns
-        个 user turn，则只加载 seq > boundary 的消息并前置摘要。
+        Checks compaction first: if no compaction record exists, loads all
+        messages. If a record exists and at least ``protect_turns`` user turns
+        have passed the boundary, loads only messages with ``seq > boundary``
+        and prepends a summary.
         """
         async with self._connect() as db:
-            # 1. 先查最新 compaction
+            # 1. fetch the latest compaction
             cursor = await db.execute(
                 "SELECT boundary_seq, summary FROM compactions WHERE session_id = ? ORDER BY boundary_seq DESC LIMIT 1",
                 (session_id,),
@@ -114,21 +117,21 @@ class LocalSessionManager(SessionManager):
             comp_row = await cursor.fetchone()
 
             if comp_row is None:
-                # 无 compaction → 加载全部
+                # no compaction → load everything
                 return await self._load_all_messages(db, session_id)
 
             boundary_seq = comp_row["boundary_seq"]
             summary = comp_row["summary"]
 
-            # 2. 只加载 boundary 之后的消息，数 user turn
+            # 2. load only messages after the boundary and count user turns
             recent = await self._load_messages_after(db, session_id, boundary_seq)
             turns_after = sum(1 for m in recent if _is_turn_start(m))
 
             if turns_after < protect_turns:
-                # 不足 protect_turns → 回退，加载全部
+                # not enough turns past the boundary → fall back to full history
                 return await self._load_all_messages(db, session_id)
 
-            # 3. 启用 compaction：摘要 + boundary 后消息
+            # 3. enable compaction: summary + messages after the boundary
             ts = datetime.now(timezone.utc)
             summary_msg = ModelRequest(
                 parts=[UserPromptPart(
@@ -141,7 +144,7 @@ class LocalSessionManager(SessionManager):
             return [summary_msg] + recent
 
     async def get_max_message_seq(self, session_id: str) -> int:
-        """返回当前 session 的最大 message_seq，无消息时返回 -1。"""
+        """Return the current maximum ``message_seq`` for the session, or ``-1`` if empty."""
         async with self._connect() as db:
             cursor = await db.execute(
                 "SELECT COALESCE(MAX(message_seq), -1) FROM messages WHERE session_id = ?",
@@ -167,9 +170,10 @@ class LocalSessionManager(SessionManager):
         return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
-        """把一批新消息（本轮 delta）追加到 messages 表。
+        """Append a batch of new messages (this turn's delta) to the ``messages`` table.
 
-        每条消息的 message_seq 从当前最大值 +1 开始。
+        Each message gets the next ``message_seq`` starting from the current
+        maximum + 1.
         """
         async with self._connect() as db:
             cursor = await db.execute(
@@ -189,7 +193,7 @@ class LocalSessionManager(SessionManager):
             await db.commit()
 
     async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None:
-        """写入 compaction 记录到独立的 compactions 表。"""
+        """Write a compaction record into the separate ``compactions`` table."""
         async with self._connect() as db:
             await db.execute(
                 "INSERT INTO compactions (session_id, boundary_seq, summary) VALUES (?, ?, ?)",

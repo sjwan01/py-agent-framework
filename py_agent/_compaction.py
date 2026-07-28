@@ -11,7 +11,7 @@ from pydantic_ai_harness.compaction import SummarizingCompaction
 
 
 class HarnessSummarizer:
-    """Pydantic AI Harness ``SummarizingCompaction`` 包装器。"""
+    """Wrapper around Pydantic AI Harness ``SummarizingCompaction``."""
 
     def __init__(
         self,

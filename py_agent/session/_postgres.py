@@ -1,4 +1,4 @@
-"""PostgreSQL session 实现。"""
+"""PostgreSQL session implementation."""
 from __future__ import annotations
 
 import json
@@ -12,13 +12,13 @@ from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapte
 from py_agent.types import SessionManager
 
 
-# ── PostgreSQL 建表语句 ──────────────────────────────────────────────
-# sessions 表：每个 session 一行，metadata 用 JSONB。
-# messages 表：每条消息一行。
-#   - entry_id 用 gen_random_uuid() 自动生成。
-#   - content 用 JSONB，psycopg 在 Python dict 和 JSONB 之间自动转换。
-#   - 索引按 (session_id, message_seq)。
-# compactions 表：每次压缩一条记录，用 boundary_seq 标记压缩覆盖范围。
+# PostgreSQL schema
+# sessions: one row per session, metadata stored as JSONB.
+# messages: one row per message.
+#   - entry_id is auto-generated with gen_random_uuid().
+#   - content uses JSONB; psycopg converts between Python dict and JSONB.
+#   - indexed by (session_id, message_seq).
+# compactions: one row per compaction, with boundary_seq marking the summarized range.
 PG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -48,49 +48,49 @@ CREATE TABLE IF NOT EXISTS compactions (
 
 
 class PostgresSessionManager(SessionManager):
-    """PostgreSQL 持久化的多轮会话管理。"""
+    """PostgreSQL-backed multi-turn session manager."""
 
     def __init__(
         self,
         *,
-        # PostgreSQL 连接 URL，例如 postgresql://user:pass@host/db。
+        # PostgreSQL connection URL, e.g. postgresql://user:pass@host/db
         pg_url: str,
-        # 连接池最小空闲连接数。
+        # minimum idle connections in the pool
         pool_size: int = 5,
-        # 连接池允许的最大额外连接数（总连接数 = pool_size + max_overflow）。
+        # maximum extra connections beyond pool_size (total = pool_size + max_overflow)
         max_overflow: int = 10,
     ):
         self._pg_url = pg_url
         self._pool_size = pool_size
         self._max_overflow = max_overflow
-        # 连接池惰性初始化，首次调用 _get_pool() 时才真正连接。
+        # lazy pool initialization; first _get_pool() call creates the real connections
         self._pool: AsyncConnectionPool | None = None
 
     async def _get_pool(self) -> AsyncConnectionPool:
-        """获取（或惰性创建）连接池。
+        """Get (or lazily create) the connection pool.
 
-        首次调用时创建连接池，打开连接，执行建表语句。
+        Creates the pool, opens it, and ensures the schema exists on first call.
         """
         if self._pool is None:
             self._pool = AsyncConnectionPool(
                 self._pg_url,
-                # min_size：保持的最小连接数，避免冷启动延迟。
+                # min_size: keep warm connections to avoid cold-start latency
                 min_size=self._pool_size,
-                # max_size：允许的最大连接数，超出 pool_size 的连接用完后会回收。
+                # max_size: hard cap; connections above pool_size are recycled after use
                 max_size=self._pool_size + self._max_overflow,
-                # open=False 表示先不建立连接，等 open() 调用时再连。
+                # open=False defers actual connection establishment until open() is called
                 open=False,
             )
             await self._pool.open()
-            # 确保 schema 存在后再对外提供服务。
+            # ensure schema exists before serving requests
             async with self._pool.connection() as conn:
                 await conn.execute(PG_SCHEMA)
         return self._pool
 
-    # ── SessionManager 接口实现 ─────────────────────────────────
+    # SessionManager interface implementation
 
     async def create_session(self, *, metadata: dict | None = None) -> str:
-        """在 sessions 表中插入一行，返回新 session_id。"""
+        """Insert a row into ``sessions`` and return the new ``session_id``."""
         pool = await self._get_pool()
         sid = str(uuid4())
         async with pool.connection() as conn:
@@ -101,7 +101,7 @@ class PostgresSessionManager(SessionManager):
         return sid
 
     async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str:
-        """确保 session 行存在：不存在则创建，存在则无操作。"""
+        """Ensure the session row exists, creating it if necessary."""
         pool = await self._get_pool()
         async with pool.connection() as conn:
             await conn.execute(
@@ -111,14 +111,16 @@ class PostgresSessionManager(SessionManager):
         return session_id
 
     async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
-        """加载 session 消息。
+        """Load messages for the session.
 
-        先查 compaction：若无记录则加载全部；若有且 boundary 后攒够 protect_turns
-        个 user turn，则只加载 seq > boundary 的消息并前置摘要。
+        Checks compaction first: if no compaction record exists, loads all
+        messages. If a record exists and at least ``protect_turns`` user turns
+        have passed the boundary, loads only messages with ``seq > boundary``
+        and prepends a summary.
         """
         pool = await self._get_pool()
         async with pool.connection() as conn:
-            # 1. 先查最新 compaction
+            # 1. fetch the latest compaction
             cursor = await conn.execute(
                 "SELECT boundary_seq, summary FROM compactions WHERE session_id = %s ORDER BY boundary_seq DESC LIMIT 1",
                 (session_id,),
@@ -131,14 +133,14 @@ class PostgresSessionManager(SessionManager):
             boundary_seq = comp_row[0]
             summary = comp_row[1]
 
-            # 2. 只加载 boundary 之后的消息，数 user turn
+            # 2. load only messages after the boundary and count user turns
             recent = await self._load_messages_after(conn, session_id, boundary_seq)
             turns_after = sum(1 for m in recent if _is_turn_start(m))
 
             if turns_after < protect_turns:
                 return await self._load_all_messages(conn, session_id)
 
-            # 3. 启用 compaction：摘要 + boundary 后消息
+            # 3. enable compaction: summary + messages after the boundary
             ts = datetime.now(timezone.utc)
             summary_msg = ModelRequest(
                 parts=[UserPromptPart(
@@ -151,7 +153,7 @@ class PostgresSessionManager(SessionManager):
             return [summary_msg] + recent
 
     async def get_max_message_seq(self, session_id: str) -> int:
-        """返回当前 session 的最大 message_seq，无消息时返回 -1。"""
+        """Return the current maximum ``message_seq`` for the session, or ``-1`` if empty."""
         pool = await self._get_pool()
         async with pool.connection() as conn:
             cursor = await conn.execute(
@@ -177,9 +179,10 @@ class PostgresSessionManager(SessionManager):
         return [_deserialize_pg_message(row[0]) for row in rows]
 
     async def save_messages(self, session_id: str, messages: list) -> None:
-        """把这轮新增的消息批量写入 messages 表。
+        """Append this turn's delta messages to the ``messages`` table.
 
-        message_seq 从当前最大值 +1 开始，同批消息按顺序递增。
+        ``message_seq`` starts at the current maximum + 1 and increments for
+        each message in the batch.
         """
         pool = await self._get_pool()
         async with pool.connection() as conn:
@@ -198,7 +201,7 @@ class PostgresSessionManager(SessionManager):
                 seq += 1
 
     async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None:
-        """写入 compaction 记录到独立的 compactions 表。"""
+        """Write a compaction record into the separate ``compactions`` table."""
         pool = await self._get_pool()
         async with pool.connection() as conn:
             await conn.execute(
@@ -207,18 +210,18 @@ class PostgresSessionManager(SessionManager):
             )
 
     async def close(self) -> None:
-        """关闭连接池，释放所有连接。"""
+        """Close the connection pool and release all connections."""
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
 
 
-# ── JSONB 反序列化辅助 ────────────────────────────────────────────────
-# psycopg 连接 JSONB 列时可能返回 Python dict（连接设置了自动反序列化）
-# 或原始 JSON 字符串（取决于配置）。这个函数统一处理两种情况。
+# JSONB deserialization helper
+# psycopg may return a Python dict for JSONB columns (when auto-deserialization is enabled)
+# or a raw JSON string (depending on configuration). This helper handles both cases.
 
 def _deserialize_pg_message(data) -> object:
-    """把 psycopg 返回的 JSONB 值（可能是 dict 或 str）反序列化为消息对象。"""
+    """Deserialize a JSONB value (dict or string) from psycopg into a message object."""
     if isinstance(data, dict):
         return _MessageAdapter.validate_python(data)
     return _MessageAdapter.validate_json(data.encode())

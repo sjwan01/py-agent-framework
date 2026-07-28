@@ -1,7 +1,8 @@
-# runner 子包：AgentRunner 的私有实现。
+# runner subpackage: private implementation of AgentRunner.
 #
-# 只暴露 AgentRunner 一个名字。所有子模块（_agent、_hooks、
-# _internals、_factory）都是实现细节，外部不应直接 import。
+# Only ``AgentRunner`` is exported. Submodules (_agent, _hooks,
+# _internals, _factory) are implementation details and should not be
+# imported directly by external code.
 """AgentRunner — orchestrates load → build → run → save."""
 from py_agent.runner._agent import AgentRunner
 

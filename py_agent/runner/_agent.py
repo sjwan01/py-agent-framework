@@ -1,16 +1,17 @@
-"""AgentRunner — 框架的核心编排器。
+"""AgentRunner — core orchestrator of the framework.
 
-入口：run(prompt) 和 run_stream(prompt)。两个方法共享完全相同的
-生命周期流程，唯一的区别是 run() 把结果打包成一个 RunResult 返回，
-run_stream() 把事件逐个 yield 给外部消费者。
+Entry points: ``run(prompt)`` and ``run_stream(prompt)``. Both methods share
+the exact same lifecycle; the only difference is that ``run()`` packages the
+result into a ``RunResult``, while ``run_stream()`` yields events one by one
+to external consumers.
 
-一次 run 的完整生命周期：
+A full run lifecycle:
 
   SESSION_START → load_history → context_prepare
   → BEFORE_AGENT_RUN → AGENT_START
-  → [Pydantic AI 循环: 工具调用、token 生成]
+  → [Pydantic AI loop: tool calls, token generation]
   → AFTER_AGENT_RUN → AGENT_END
-  → save_messages → [可选: compaction]
+  → save_messages → [optional: compaction]
   → SESSION_END → run_end
 """
 from __future__ import annotations
@@ -38,20 +39,21 @@ from py_agent.types import (
 
 from py_agent.runner import _factory, _hooks, _internals
 
-# Pydantic AI 支持的 thinking 深度级别。无效值会被忽略并回退。
+# Pydantic AI thinking depth levels. Invalid values are ignored and fall back.
 _VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
 
 
 class AgentRunner:
     """Orchestrates load → build → run → save."""
 
-    # ── 类属性绑定：把子模块函数绑成实例方法 ──────────────────
+    # Class-attribute bindings: wire submodule functions as instance methods.
     #
-    # Python 技巧：module-level 函数第一个参数是 self，在这里通过
-    # 类属性绑定，调用 self._fire(...) 时实际执行 _internals.fire(self, ...)。
-    # 这个模式避免了多重继承或者把所有代码塞在一个文件里。
+    # Technique: module-level functions take ``self`` as their first argument and are
+    # bound here as class attributes, so ``self._fire(...)`` actually calls
+    # ``_internals.fire(self, ...)``. This avoids multiple inheritance or putting
+    # all code in a single file.
 
-    # --- 来自 _internals.py（运行时工具函数）---
+    # --- from _internals.py (runtime helpers) ---
     _build_hooks = _hooks.build_hooks
     _messages_to_persist = staticmethod(_internals.messages_to_persist)
     _notify_streamers = staticmethod(_internals.notify_streamers)
@@ -61,11 +63,11 @@ class AgentRunner:
     _fire_notify = _internals.fire_notify
     _get_tools = _internals.get_tools
 
-    # --- 来自 _factory.py（初始化/生命周期/发现）---
+    # --- from _factory.py (init / lifecycle / discovery) ---
     _ensure_tool_lifecycle = _factory.ensure_tool_lifecycle
     _trigger_compaction = _factory.trigger_compaction
 
-    # ── 构造函数 ─────────────────────────────────────────────
+    # Constructor
 
     def __init__(
         self,
@@ -85,16 +87,16 @@ class AgentRunner:
         capabilities: list[Any] | None = None,
         on_warning: Callable[[str, Exception | None], None] | None = None,
     ):
-        """构造 AgentRunner。
+        """Construct AgentRunner.
 
-        最简单的用法只需 model：
+        Only ``model`` is required:
 
             runner = AgentRunner(model=my_model)
 
-        其他参数都是可选的：system_prompt、extensions、tools、
-        session_manager、context_manager_config、summarizer_config 等。
-        不传就用默认值（空 system prompt、SingleTurn session、
-        无 context 管理、无 compaction）。
+        All other parameters are optional: ``system_prompt``, ``extensions``, ``tools``,
+        ``session_manager``, ``context_manager_config``, ``summarizer_config``, etc.
+        Defaults are an empty system prompt, ``SingleTurnSessionManager``,
+        no context management, and no compaction.
         """
         def _noop(msg: str, exc: Exception | None = None) -> None:
             pass
@@ -149,39 +151,39 @@ class AgentRunner:
 
         self._on_warning = on_warning or _noop
 
-    # ── run() 和 run_stream() 的共享方法 ─────────────────────
+    # Shared helpers for run() and run_stream()
 
     async def _setup_run(
         self, prompt: str, session_id: str | None
     ) -> tuple[str, list, list, bool]:
-        """run() / run_stream() 共享的 run 前准备。
+        """Shared pre-run setup for ``run()`` / ``run_stream()``.
 
-        返回值：(session_id, history, original_history, needs_compaction)
+        Returns:
+            A tuple of ``(session_id, history, original_history, needs_compaction)``:
 
-        其中：
-        - history：经过 ContextManager 截断 + Extension 注入后的消息列表
-        - original_history：从 DB 加载的原始消息列表（用于计算本轮 delta）
-        - needs_compaction：ContextManager 判定是否需要压缩
+            - history: message list after ContextManager truncation and extension injection
+            - original_history: raw list loaded from the DB (used to compute the turn delta)
+            - needs_compaction: whether ContextManager flagged compaction as needed
         """
-        # 第一步：创建或复用 session
+        # step 1: create or reuse session
         if session_id is None:
             session_id = await self._session_manager.create_session()
         else:
             await self._session_manager.ensure_session(session_id)
 
-        # SESSION_START 事件
+        # SESSION_START event
         await self._fire(AgentRunnerEvent.SESSION_START, {"session_id": session_id})
 
-        # 第二步：加载历史消息（已含 compaction 判定逻辑）
+        # step 2: load history (compaction logic is already applied inside)
         history = await self._session_manager.load_history(
             session_id, protect_turns=self._protect_turns
         )
-        # 保存原始副本——之后 Extension 会在 history 上注入消息，
-        # 我们需要 original_history 来计算本轮真正的新增消息
+        # keep the original copy — extensions may inject messages into history,
+        # and we need original_history to compute the real delta for this turn
         original_history = list(history)
 
-        # 第三步：ContextManager.prepare —— 截断、baseline diff 注入、
-        #         判定是否需要 compaction（无 ContextManager 则跳过）
+        # step 3: ContextManager.prepare — truncation, baseline diff injection,
+        # and compaction flag (skipped when no ContextManager is configured)
         needs_compaction = False
         if self._context_manager is not None:
             try:
@@ -195,8 +197,8 @@ class AgentRunner:
             except Exception as exc:  # pragma: no cover - fail-open
                 self._on_warning(f"ContextManager prepare failed: {exc}", exc)
 
-        # 第四步：CONTEXT_PREPARE 事件（只读——Extension 的返回值被忽略，
-        #          修改 messages 的唯一入口是下一步的 BEFORE_AGENT_RUN）
+        # step 4: CONTEXT_PREPARE event (read-only — extension return values are ignored,
+        # the only place to modify messages is the next BEFORE_AGENT_RUN step)
         ctx_data = {
             "session_id": session_id,
             "messages": history,
@@ -204,13 +206,13 @@ class AgentRunner:
         }
         await self._fire(AgentRunnerEvent.CONTEXT_PREPARE, ctx_data)
 
-        # 第五步：BEFORE_AGENT_RUN 事件（Extension 在这里注入消息）
+        # step 5: BEFORE_AGENT_RUN event (extensions inject messages here)
         before_data = {"session_id": session_id, "messages": history}
         before_result = await self._fire(AgentRunnerEvent.BEFORE_AGENT_RUN, before_data)
         if "messages" in before_result:
             history = before_result["messages"]
 
-        # 第六步：AGENT_START 事件（只读——告诉 Extension 正式开始了）
+        # step 6: AGENT_START event (read-only — informs extensions the run has started)
         await self._fire(
             AgentRunnerEvent.AGENT_START,
             {"session_id": session_id, "prompt": prompt, "messages": history},
@@ -225,25 +227,29 @@ class AgentRunner:
         pending: list[Any] | None = None,
         streamers: list[Any] | None = None,
     ) -> Agent:
-        """构造本轮要用的 Pydantic AI Agent。
+        """Build the Pydantic AI Agent for this turn.
 
-        - hooks：框架自己的 Hooks（工具拦截 + 事件分发）
-        - capabilities：用户的 capabilities + 框架的 hooks
-        - model_settings：并行工具调用开关 + thinking 配置
+        Args:
+            session_id: Current session identifier.
+            pending: Staging list for streaming events.
+            streamers: Streaming extensions that should receive runtime events.
+
+        Returns:
+            A configured ``Agent`` instance.
         """
-        # 构建 Hooks（工具执行前/中/后的拦截逻辑）
+        # build hooks (intercept logic before/during/after tool execution)
         hooks = self._build_hooks(session_id, pending=pending, streamers=streamers)
 
-        # 组装 capabilities 列表
+        # assemble the capabilities list
         capabilities = self._build_capabilities()
         if hooks not in capabilities:
             capabilities.append(hooks)
 
-        # 模型设置
+        # model settings
         model_settings = ModelSettings(
             parallel_tool_calls=self._parallel_tool_calls,
         )
-        # thinking 配置
+        # thinking configuration
         if self._thinking_enabled:
             level = self._thinking_level
             if level is not None and level not in _VALID_THINKING_LEVELS:
@@ -274,26 +280,27 @@ class AgentRunner:
         streamers: list[Any] | None = None,
         pending: list[Any] | None = None,
     ) -> AsyncIterator[dict]:
-        """run() / run_stream() 共享的 run 后收尾。
+        """Shared post-run cleanup for ``run()`` / ``run_stream()``.
 
-        Agent 执行完毕后，按顺序：
-        1. 发 AFTER_AGENT_RUN 和 AGENT_END 事件
-        2. 保存本轮新增消息到 DB（增量）
-        3. 触发 compaction（如果需要且未被取消）
-        4. 发 SESSION_END 事件
-        5. yield run_end（{"type": "run_end", ...}）
+        After the Agent finishes, this:
 
-        这是一个 async generator——run_stream() 把中间事件 yield 给外部，
-        run() 只消费最终的 run_end。
+        1. Fires ``AFTER_AGENT_RUN`` and ``AGENT_END``.
+        2. Saves the turn's delta messages to the DB.
+        3. Triggers compaction if needed and not cancelled.
+        4. Fires ``SESSION_END``.
+        5. Yields ``run_end`` (``{"type": "run_end", ...}``).
+
+        This is an async generator. ``run_stream()`` yields the intermediate events to
+        the external consumer; ``run()`` only consumes the final ``run_end``.
         """
         streamers = streamers if streamers is not None else []
         pending = pending if pending is not None else []
 
-        # 计算本轮新增消息（原始历史 vs Agent 生成后的完整列表）
+        # compute this turn's delta (original history vs. full list produced by the Agent)
         delta_messages = self._messages_to_persist(original_history, result.all_messages())
         usage = result.usage
 
-        # ── Agent 结束事件 ──
+        # Agent-end events
         payload = {"session_id": session_id, "output": output, "usage": usage}
         await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, payload)
         await self._notify_streamers(streamers, AgentRunnerEvent.AFTER_AGENT_RUN, payload, pending)
@@ -302,7 +309,7 @@ class AgentRunner:
         async for chunk in self._drain_pending(pending):
             yield chunk
 
-        # ── 保存消息 ──
+        # Save messages
         await self._session_manager.save_messages(session_id, delta_messages)
         save_payload = {"session_id": session_id, "delta_messages": delta_messages}
         await self._fire(AgentRunnerEvent.SESSION_SAVE, save_payload)
@@ -310,31 +317,31 @@ class AgentRunner:
         async for chunk in self._drain_pending(pending):
             yield chunk
 
-        # ── Compaction（如果需要且 Extension 没取消）──
+        # Compaction (if needed and not cancelled by extensions)
         if needs_compaction:
-            # 征询 Extension：是否取消本次压缩
+            # ask extensions whether to cancel this compaction
             comp_result = await self._fire_notify(AgentRunnerEvent.COMPACTION_TRIGGER, {
                 "session_id": session_id,
             })
             cancelled = comp_result.get("cancel", False)
             if not cancelled:
-                # 异步触发，不阻塞当前轮次的响应
+                # trigger in the background so the current turn's response is not blocked
                 asyncio.create_task(self._trigger_compaction(session_id))
-            # 通知 Extension 压缩结果（取消还是已触发）
+            # notify extensions of the compaction outcome (cancelled or triggered)
             applied_payload = {"session_id": session_id, "cancelled": bool(cancelled)}
             await self._fire(AgentRunnerEvent.COMPACTION_APPLIED, applied_payload)
             await self._notify_streamers(streamers, AgentRunnerEvent.COMPACTION_APPLIED, applied_payload, pending)
             async for chunk in self._drain_pending(pending):
                 yield chunk
 
-        # ── 会话结束 ──
+        # Session end
         end_payload = {"session_id": session_id}
         await self._fire(AgentRunnerEvent.SESSION_END, end_payload)
         await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_END, end_payload, pending)
         async for chunk in self._drain_pending(pending):
             yield chunk
 
-        # ── 最终事件 ──
+        # Final event
         yield {
             "type": "run_end",
             "session_id": session_id,
@@ -343,32 +350,33 @@ class AgentRunner:
             "usage": usage,
         }
 
-    # ── 公开 API ─────────────────────────────────────────────
+    # Public API
 
     async def run(self, prompt: str, *, session_id: str | None = None) -> RunResult:
-        """执行一次对话，返回 RunResult。
+        """Run one conversation turn and return a ``RunResult``.
 
-        这是最常用的入口。内部流程：
+        This is the most common entry point. Internal flow:
 
-           _setup_run → _build_agent → agent.run_stream（流式消费文本）
-           → _finalize_run → 提取 run_end → 返回 RunResult
+           _setup_run → _build_agent → agent.run_stream (consume text internally)
+           → _finalize_run → extract run_end → return RunResult
 
-        流式消费只是实现细节——consumer 不需要知道底层走了 stream_text()。
+        Streaming consumption here is an implementation detail — callers do not need to
+        know that ``stream_text()`` is used underneath.
         """
-        # 1. 准备（加载历史、context 处理、Extension 注入）
+        # 1. setup (load history, context handling, extension injection)
         session_id, history, original_history, needs_compaction = await self._setup_run(
             prompt, session_id
         )
-        # 2. 构造 Agent
+        # 2. build agent
         agent = await self._build_agent(session_id)
 
-        # 3. 执行 Agent（始终走 run_stream，内部把 token 拼接成完整文本）
+        # 3. run agent (always uses run_stream; tokens are concatenated into full text internally)
         output_parts: list[str] = []
         async with agent.run_stream(prompt, message_history=history) as result:
             async for text in result.stream_text(delta=False):
                 output_parts.append(text)
-                # 每个 token chunk 也触发 TOKEN_STREAM 事件
-                # （但不走 notify_streamers——run() 不是流式 API）
+                # each token chunk also fires a TOKEN_STREAM event
+                # (but not notify_streamers, because run() is not a streaming API)
                 await self._fire(
                     AgentRunnerEvent.TOKEN_STREAM,
                     {
@@ -379,7 +387,7 @@ class AgentRunner:
 
         output = "".join(output_parts)
 
-        # 4. 收尾（保存、compaction、事件）
+        # 4. finalize (save, compaction, events)
         async for event in self._finalize_run(
             session_id, original_history, result, output, needs_compaction
         ):
@@ -391,38 +399,39 @@ class AgentRunner:
                     usage=event["usage"],
                 )
 
-        # 不应该走到这里——_finalize_run 一定会 yield run_end
+        # should never reach here — _finalize_run always yields run_end
         raise RuntimeError("run did not produce a run_end event")  # pragma: no cover
 
     async def run_stream(
         self, prompt: str, *, session_id: str | None = None
     ) -> AsyncIterator[dict]:
-        """执行一次对话，逐条 yield 事件给外部消费者。
+        """Run one conversation turn and yield events one by one.
 
-        和 run() 的区别：
-        - 构造 Agent 时传了 streamers——所有 Extension 都会收到运行时事件
-        - token chunk、工具调用、生命周期事件的流式产出被逐个 yield
-        - 最终事件同样是 {"type": "run_end", ...}
+        Differences from ``run()``:
+
+        - The Agent is built with ``streamers`` so all extensions receive runtime events.
+        - Token chunks, tool calls, and lifecycle events are yielded as they happen.
+        - The final event is still ``{"type": "run_end", ...}``.
         """
-        # 1. 准备（和 run() 完全一样）
+        # 1. setup (same as run())
         session_id, history, original_history, needs_compaction = await self._setup_run(
             prompt, session_id
         )
 
-        # 2. 构造 Agent——传入 streamers，开启流式事件推送
+        # 2. build agent — pass streamers to enable streaming event push
         streamers = list(self._extensions)
         pending: list[dict] = []
         agent = await self._build_agent(
             session_id, pending=pending, streamers=streamers
         )
 
-        # 3. 执行 Agent——每个 token chunk 都 notify + drain
+        # 3. run agent — notify + drain for every token chunk
         output_parts: list[str] = []
         async with agent.run_stream(prompt, message_history=history) as result:
             async for text in result.stream_text(delta=False):
                 output_parts.append(text)
-                # TOKEN_STREAM 事件：既发 fire（老 Extension），也发
-                # notify_streamers（流式 Extension 的 yield 进入 pending）
+                # TOKEN_STREAM event: fire for legacy extensions and
+                # notify_streamers (streaming extension yields go into pending)
                 payload = {
                     "session_id": session_id,
                     "data": {"chunk": text},
@@ -431,13 +440,13 @@ class AgentRunner:
                 await self._notify_streamers(
                     streamers, AgentRunnerEvent.TOKEN_STREAM, payload, pending,
                 )
-                # drain：把 pending 里的 chunks yield 给外部消费者
+                # drain pending chunks to the external consumer
                 async for chunk in self._drain_pending(pending):
                     yield chunk
 
         output = "".join(output_parts)
 
-        # 4. 收尾——yield 所有 post-agent 事件（包括最终的 run_end）
+        # 4. finalize — yield all post-agent events (including final run_end)
         async for event in self._finalize_run(
             session_id,
             original_history,

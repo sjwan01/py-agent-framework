@@ -6,32 +6,33 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, User
 
 from py_agent.types import MessageRole
 
-# DB 按"每行一条消息"存储，不是整个消息列表，所以用单消息 TypeAdapter。
+# The DB stores one row per message, so use a single-message adapter.
 _MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)
 
 
 def _infer_role(msg: ModelMessage) -> MessageRole:
-    """根据消息类型和第一个 part 推断角色，写入 DB 的 role 列。
+    """Infer the message role from its type and first part for the DB role column.
 
-    这只是标记用途，不影响反序列化后的消息对象本身。
+    This is only a marker for the DB; it does not affect the deserialized
+    message object.
     """
-    # ModelRequest：如果第一个 part 有 tool_name 属性，说明是 tool 返回消息。
+    # ModelRequest with a first part that has tool_name is a tool return message.
     if isinstance(msg, ModelRequest):
         parts = msg.parts
         if parts and hasattr(parts[0], "tool_name"):
             return MessageRole.TOOL
         return MessageRole.USER
-    # ModelResponse：assistant 的回复。
+    # ModelResponse is an assistant reply.
     if isinstance(msg, ModelResponse):
         return MessageRole.ASSISTANT
     return MessageRole.UNKNOWN
 
 
 def _is_turn_start(msg) -> bool:
-    """判断一条消息是不是用户 turn 的起点。
+    """Return True if ``msg`` marks the start of a new user turn.
 
-    规则：ModelRequest 且第一个 part 是 UserPromptPart。
-    这约等于"用户发了一条新消息"。
+    A turn starts when the message is a ``ModelRequest`` whose first part is a
+    ``UserPromptPart``. This is roughly equivalent to "the user sent a new message".
     """
     if isinstance(msg, ModelRequest):
         return bool(msg.parts) and isinstance(msg.parts[0], UserPromptPart)

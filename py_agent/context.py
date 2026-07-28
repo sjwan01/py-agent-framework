@@ -12,7 +12,7 @@ from py_agent.session._shared import _is_turn_start
 
 
 class PreparedContext(BaseModel):
-    """ContextManager.prepare() 的输出。"""
+    """Output of ``ContextManager.prepare()``."""
 
     messages: list[Any] = Field(default_factory=list)
     needs_compaction: bool = False
@@ -20,7 +20,7 @@ class PreparedContext(BaseModel):
 
 
 class BaselineState(BaseModel):
-    """基线时刻的 skill/tool/context 快照，用于 diff 注入。"""
+    """Snapshot of skills, tools, and context at baseline time for diff injection."""
 
     skills: dict[str, str] = Field(default_factory=dict)
     tools: dict[str, str] = Field(default_factory=dict)
@@ -48,7 +48,7 @@ class ContextManager:
     async def prepare(
         self, messages: list, *, system_prompt: str, current_state: BaselineState,
     ) -> PreparedContext:
-        # Work on a copy so the caller's list is not mutated and prepare is idempotent.
+        # work on a copy so the caller's list is not mutated and prepare stays idempotent
         messages = list(messages)
 
         if self._frozen_baseline is None:
@@ -83,16 +83,16 @@ class ContextManager:
         )
 
 
-# ── 单次正向遍历：估算 + turn boundary ─────────────────────────────────
-# 合并原来的 _default_estimate 和 _find_turn_boundary。
-# 正向遍历一次，同时累计字符数和记录每个 user turn 的起始索引。
+# Single forward pass: estimate tokens and find the turn boundary.
+# Merges the former _default_estimate and _find_turn_boundary helpers.
+# Walks forward once, accumulating characters and recording each user turn start.
 
 def _estimate_and_find_boundary(messages: list, protect: int) -> tuple[int, int]:
-    """单次正向遍历，返回 (total_tokens, boundary_index)。
+    """Return a rough token estimate and the truncation boundary.
 
-    total_tokens: 所有文本字符数 ÷ 4 的粗略估算。
-    boundary_index: 第 protect 个 user turn（从末尾数）的起始索引。
-                    此索引之前的消息可以被截断。
+    ``total_tokens`` is a rough estimate (total characters divided by 4).
+    ``boundary`` is the start index of the ``protect``-th user turn from the end.
+    Messages before ``boundary`` may be truncated.
     """
     total_chars = 0
     turn_starts: list[int] = []
@@ -115,23 +115,24 @@ def _estimate_and_find_boundary(messages: list, protect: int) -> tuple[int, int]
     return tokens, boundary
 
 
-# ── 单次正向遍历：截断 + 重新估算 ──────────────────────────────────────
-# 合并原来的 _truncate_old_tool_results 和第二次 _estimate。
-# 一边截断 boundary 之前的旧 tool results，一边累加截断后的字符数。
+# Single forward pass: truncate old tool results and re-estimate.
+# Merges the former _truncate_old_tool_results and the second estimation pass.
+# Truncates old tool results before the boundary while accumulating the truncated character count.
 
 def _truncate_and_estimate(
     messages: list, boundary: int, max_chars: int
 ) -> tuple[list, int]:
-    """截断旧 tool results 并返回 (new_messages, tokens_after)。
+    """Truncate old tool results and return the updated messages plus token count.
 
-    不修改原始 messages。只有精确的 ``ToolReturnPart``（非子类）
-    且 content 是字符串且长度超过 max_chars 才会被截断。
+    Does not mutate the original ``messages``. Only exact ``ToolReturnPart``
+    instances (not subclasses) whose ``content`` is a string longer than
+    ``max_chars`` are truncated.
     """
     out: list = []
     total_chars = 0
 
     for i, msg in enumerate(messages):
-        # 不在截断范围的 ModelRequest 需要遍历 parts 统计 token。
+        # messages outside the truncation range still need their parts counted for tokens
         if not isinstance(msg, ModelRequest) or i >= boundary:
             out.append(msg)
             for part in getattr(msg, "parts", ()):
@@ -174,7 +175,7 @@ def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
             lines.append(f'  Added skill "{name}": "{desc}"')
         elif baseline.skills[name] != desc:
             lines.append(f'  Updated skill "{name}": "{desc}"')
-            # Note: old description available as baseline.skills[name] if needed
+            # old description available as baseline.skills[name] if needed
     for name in baseline.skills:
         if name not in current.skills:
             lines.append(f'  Removed skill "{name}": "{baseline.skills[name]}"')
@@ -184,7 +185,7 @@ def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
             lines.append(f'  Added tool "{name}": "{desc}"')
         elif baseline.tools[name] != desc:
             lines.append(f'  Updated tool "{name}": "{desc}"')
-            # Note: old description available as baseline.tools[name] if needed
+            # old description available as baseline.tools[name] if needed
     for name in baseline.tools:
         if name not in current.tools:
             lines.append(f'  Removed tool "{name}": "{baseline.tools[name]}"')

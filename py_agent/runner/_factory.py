@@ -1,7 +1,8 @@
 """Lifecycle and discovery for AgentRunner.
 
-这个模块包含 AgentRunner 的工具注册、compaction 触发和 Extension
-自动发现。所有函数的第一个参数 `self` 都是 AgentRunner 实例。
+This module contains AgentRunner's tool registration, compaction triggering,
+and automatic extension discovery. Every function's first parameter ``self``
+is an ``AgentRunner`` instance.
 """
 from __future__ import annotations
 
@@ -9,24 +10,25 @@ from py_agent.tools import LocalToolSource, ToolLifecycle
 from py_agent.types import ToolLifecycleEvent
 
 
-# ── 工具注册（懒初始化，首次 run 时调用）─────────────────────
+# Lazy tool lifecycle initialization (called on the first run).
 
 async def ensure_tool_lifecycle(self):
-    """懒初始化 ToolLifecycle，注册所有来源的工具。
+    """Lazily initialize ``ToolLifecycle`` and register tools from all sources.
 
-    这个函数在第一次 run() / run_stream() 时被调用，之后不再执行。
-    注册顺序：
-    1. 创建 ToolLifecycle 实例
-    2. 把 Extension 的 on_tool_event handler 注册到所有工具事件
-    3. 注册构造时传的 raw tools（作为 LocalToolSource）
-    4. 调用每个 Extension 的 register_tool_sources()，注册它们的
-       ToolSource（Local/MCP/Subagent）
+    Called once during the first ``run()`` / ``run_stream()`` invocation and
+    cached afterwards. Registration order:
+
+    1. Create the ``ToolLifecycle`` instance.
+    2. Subscribe extension ``on_tool_event`` handlers to all tool events.
+    3. Register raw tools passed to the constructor as a ``LocalToolSource``.
+    4. Call each extension's ``register_tool_sources()`` and register the
+       returned ``ToolSource`` instances (local, MCP, or subagent).
     """
-    # 已经初始化过，直接返回
+    # already initialized, return immediately
     if self._tool_lifecycle_initialized:
         return self._tool_lifecycle
 
-    # 首次创建：如果没有 tools 也没有 extensions，不需要 ToolLifecycle
+    # first run: skip ToolLifecycle if there are no tools or extensions
     if self._tool_lifecycle is None:
         if self._raw_tools or self._extensions:
             self._tool_lifecycle = ToolLifecycle(on_warning=self._on_warning)
@@ -34,8 +36,7 @@ async def ensure_tool_lifecycle(self):
             self._tool_lifecycle_initialized = True
             return None
 
-    # 先订阅 Extension 的工具事件处理器（register 之前订阅，这样
-    # TOOL_CONFLICT 等事件在注册时就能被 Extension 拦截处理）
+    # subscribe extension handlers before registering so TOOL_CONFLICT etc. can be intercepted
     for ext in self._extensions:
         handler = getattr(ext, "on_tool_event", None)
         if handler is None:
@@ -43,12 +44,11 @@ async def ensure_tool_lifecycle(self):
         for event in ToolLifecycleEvent:
             self._tool_lifecycle.on(event, handler)
 
-    # 注册构造时传的 raw tools
+    # register raw tools passed to the constructor
     if self._raw_tools:
         await self._tool_lifecycle.add_source(LocalToolSource(self._raw_tools))
 
-    # 调用每个 Extension 的 register_tool_sources()
-    # Extension 可以在这里返回 LocalToolSource、MCPServerSource 等
+    # let extensions expose their own tool sources
     for ext in self._extensions:
         register = getattr(ext, "register_tool_sources", None)
         if register is None:
@@ -68,31 +68,32 @@ async def ensure_tool_lifecycle(self):
     return self._tool_lifecycle
 
 
-# ── Compaction 触发 ──────────────────────────────────────────
+# Compaction trigger.
 
 async def trigger_compaction(self, session_id: str) -> None:
-    """异步压缩当前 session 的历史消息。
+    """Asynchronously compact the history for the current session.
 
-    在 _finalize_run 中通过 asyncio.create_task 触发，不阻塞这一轮
-    的响应。流程：
-    1. 取当前最大的 message_seq（这就是压缩边界——该 seq 及之前的
-       全部消息都被压缩覆盖）
-    2. load_history（protect_turns=0，如有旧的 compaction 摘要会
-       被加载）→ 全部消息
-    3. summarizer 总结全部消息（若为 None 则跳过 LLM 总结）
-    4. 把摘要写入 compactions 表
+    Triggered from ``_finalize_run`` via ``asyncio.create_task`` so it does not
+    block the current turn's response. Flow:
+
+    1. Get the current maximum ``message_seq``; this is the compaction boundary
+       (messages at and before this seq are summarized/overwritten).
+    2. Load full history (``protect_turns=0``; any existing compaction summary
+       will be loaded).
+    3. Summarize all messages (skipped if the summarizer is ``None``).
+    4. Write the summary into the ``compactions`` table.
     """
     try:
-        # 取 raw 最大值，不受 compaction 表影响
+        # raw maximum, unaffected by the compactions table
         boundary_seq = await self._session_manager.get_max_message_seq(session_id)
         if boundary_seq < 0:
             return
 
         summarizer = self._compaction_summarizer
         if summarizer is None:
-            return  # 未配置 SummarizerConfig，跳过 LLM 压缩
+            return  # no SummarizerConfig configured, skip LLM compaction
 
-        # protect_turns=0 → 永远直接返回摘要 + 全量消息
+        # protect_turns=0 always returns summary + full message list
         messages = await self._session_manager.load_history(session_id)
         summary = await summarizer.summarize(messages)
 
@@ -103,6 +104,3 @@ async def trigger_compaction(self, session_id: str) -> None:
         )
     except Exception as exc:  # pragma: no cover - fail-open
         self._on_warning(f"Compaction failed for session {session_id}: {exc}", exc)
-
-
-
