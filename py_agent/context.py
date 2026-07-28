@@ -37,10 +37,10 @@ class ContextManager:
         truncate_chars: int = 1_000,
         context_window_cap: int = 128_000,
     ):
-        if low_watermark_ratio > high_watermark_ratio:
+        if not (0 < low_watermark_ratio < high_watermark_ratio < 1):
             raise ValueError(
-                f"low_watermark_ratio ({low_watermark_ratio}) must not exceed "
-                f"high_watermark_ratio ({high_watermark_ratio})"
+                f"watermark ratios must satisfy 0 < low ({low_watermark_ratio}) "
+                f"< high ({high_watermark_ratio}) < 1"
             )
         if protect_turns < 0:
             raise ValueError(
