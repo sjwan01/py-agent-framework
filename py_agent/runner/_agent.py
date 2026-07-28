@@ -75,12 +75,12 @@ class AgentRunner:
             ``PostgresSessionManager(pg_url=...)`` for persistence.
         context_manager_config: Configuration for automatic context window
             truncation and compaction detection. For multi-turn sessions, a
-            default ``ContextManager`` is created automatically if this is unset.
-            Single-turn sessions skip context management when this is ``None``.
+            default ``ContextManager`` is created automatically if this is
+            unset. Ignored when using ``SingleTurnSessionManager`` (the default).
         summarizer_config: Configuration for LLM-based context compaction.
             For multi-turn sessions, a default ``HarnessSummarizer`` reusing
             the main model is created automatically if this is unset.
-            Single-turn sessions skip compaction when this is ``None``.
+            Ignored when using ``SingleTurnSessionManager`` (the default).
         max_tool_calls_per_turn: Hard limit on tool invocations per turn.
             The model receives a message and continues when exceeded.
             Defaults to ``5``.
@@ -154,42 +154,39 @@ class AgentRunner:
         self._session_manager = session_manager or SingleTurnSessionManager()
         is_multi = not isinstance(self._session_manager, SingleTurnSessionManager)
 
-        # context manager: explicit config → from config; multi-turn → defaults;
-        # single-turn → skip
-        self._context_manager: ContextManager | None = None
-        if context_manager_config is not None:
-            self._context_manager = ContextManager(
-                context_window_cap=context_manager_config.context_window,
-                low_watermark_ratio=context_manager_config.low_watermark_ratio,
-                high_watermark_ratio=context_manager_config.high_watermark_ratio,
-                protect_turns=context_manager_config.protect_turns,
-                truncate_chars=context_manager_config.truncate_tool_result_chars,
-            )
-        elif is_multi:
-            self._context_manager = ContextManager()
-            
-        self._protect_turns = (
-            self._context_manager._protect if self._context_manager else 0
-        )
+        # context manager: single-turn → never; multi-turn → from config or
+        # sensible defaults
+        if is_multi:
+            if context_manager_config is not None:
+                self._context_manager = ContextManager(
+                    context_window_cap=context_manager_config.context_window,
+                    low_watermark_ratio=context_manager_config.low_watermark_ratio,
+                    high_watermark_ratio=context_manager_config.high_watermark_ratio,
+                    protect_turns=context_manager_config.protect_turns,
+                    truncate_chars=context_manager_config.truncate_tool_result_chars,
+                )
+            else:
+                self._context_manager = ContextManager()
+            self._protect_turns = self._context_manager._protect
+        else:
+            self._context_manager = None
+            self._protect_turns = 0
 
-        # summarizer: explicit config → from config; multi-turn → defaults
-        # (reuses main model); single-turn → skip
-        self._compaction_summarizer: HarnessSummarizer | None = None
-        if summarizer_config is not None:
-            context_window = (
-                self._context_manager._context_window_cap
-                if self._context_manager
-                else 128_000
-            )
-            default_max = int(min(32_768, max(context_window * 0.1, 8_192)))
-            self._compaction_summarizer = HarnessSummarizer(
-                model=summarizer_config.model or model,
-                max_output_tokens=summarizer_config.max_output_tokens
-                or default_max,
-                summary_prompt=summarizer_config.summary_prompt,
-            )
-        elif is_multi:
-            self._compaction_summarizer = HarnessSummarizer(model=model)
+        # summarizer: single-turn → never; multi-turn → from config or defaults
+        if is_multi:
+            if summarizer_config is not None:
+                context_window = self._context_manager._context_window_cap
+                default_max = int(min(32_768, max(context_window * 0.1, 8_192)))
+                self._compaction_summarizer = HarnessSummarizer(
+                    model=summarizer_config.model or model,
+                    max_output_tokens=summarizer_config.max_output_tokens
+                    or default_max,
+                    summary_prompt=summarizer_config.summary_prompt,
+                )
+            else:
+                self._compaction_summarizer = HarnessSummarizer(model=model)
+        else:
+            self._compaction_summarizer = None
 
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
         self._parallel_tool_calls = parallel_tool_calls
