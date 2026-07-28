@@ -51,9 +51,10 @@ CREATE TABLE IF NOT EXISTS compactions (
 class LocalSessionManager(SessionManager):
     """SQLite-backed multi-turn session.
 
-    Each session lives in one row of ``sessions``, each message in one row of
-    ``messages``. Messages are loaded ordered by ``message_seq``; compaction
-    records live in the separate ``compactions`` table.
+    Args:
+        db_path: Path to the SQLite database file.
+
+    Creates tables on first use. Supports compaction using ``boundary_seq``.
     """
 
     def __init__(self, *, db_path: str):

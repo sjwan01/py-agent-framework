@@ -48,7 +48,15 @@ CREATE TABLE IF NOT EXISTS compactions (
 
 
 class PostgresSessionManager(SessionManager):
-    """PostgreSQL-backed multi-turn session manager."""
+    """PostgreSQL-backed multi-turn session with connection pooling.
+
+    Args:
+        pg_url: PostgreSQL connection URL, e.g. ``postgresql://user:pass@host/db``.
+        pool_size: Minimum idle connections in the pool. Defaults to 5.
+        max_overflow: Extra connections allowed beyond ``pool_size``. Defaults to 10.
+
+    The pool is created lazily on first use. Call ``close()`` to shut it down.
+    """
 
     def __init__(
         self,

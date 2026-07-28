@@ -8,13 +8,13 @@ from pydantic_ai.models import Model
 
 
 class RunResult(BaseModel):
-    """Return value of a single ``AgentRunner.run()`` call.
+    """Return value of ``AgentRunner.run()``.
 
     Attributes:
-        output: Final text output produced by the agent.
-        session_id: Session identifier that survives across turns.
-        new_messages: Delta messages produced in this turn (relative to loaded history).
-        usage: Pydantic AI usage statistics, including input/output tokens and tool calls.
+        output: Final text output from the agent.
+        session_id: Identifier that persists across turns; pass to the next ``run()``.
+        new_messages: Messages added this turn, persisted to the session backend.
+        usage: Pydantic AI usage stats such as input/output tokens and tool calls.
     """
 
     output: str
@@ -24,10 +24,16 @@ class RunResult(BaseModel):
 
 
 class ContextManagerConfig(BaseModel):
-    """Configuration for context window truncation and watermark management.
+    """Configuration for automatic context window management.
 
-    When passed to ``AgentRunner``, a ``ContextManager`` is created internally.
-    When ``None``, context management is skipped entirely (single-turn mode).
+    Pass to ``AgentRunner`` to enable context management. ``None`` disables it.
+
+    Attributes:
+        context_window: Token budget for the context window. Defaults to 128000.
+        low_watermark_ratio: Fraction of ``context_window`` that triggers truncation of old tool results. Defaults to 0.6.
+        high_watermark_ratio: Fraction of ``context_window`` that flags the context for asynchronous compaction. Defaults to 0.75.
+        protect_turns: Number of most recent turns to keep intact. Defaults to 5.
+        truncate_tool_result_chars: Maximum characters per tool result after truncation. Defaults to 1000.
     """
 
     context_window: int = 128_000
@@ -38,11 +44,14 @@ class ContextManagerConfig(BaseModel):
 
 
 class SummarizerConfig(BaseModel):
-    """Configuration for LLM-based context compaction via ``HarnessSummarizer``.
+    """Configuration for LLM-powered context compaction.
 
-    When passed to ``AgentRunner``, a ``HarnessSummarizer`` is created
-    internally and compaction is enabled. When ``None``, LLM summarization
-    is skipped.
+    Pass to ``AgentRunner`` to enable compaction. ``None`` disables it.
+
+    Attributes:
+        model: Pydantic AI model used for summarization. ``None`` falls back to the main agent model.
+        max_output_tokens: Maximum tokens for the summary. ``None`` computes ``min(32768, max(context_window * 0.1, 8192))``.
+        summary_prompt: Custom prompt template for summarization. ``None`` uses the built-in six-section harness default.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

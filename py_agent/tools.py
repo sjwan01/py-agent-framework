@@ -14,6 +14,13 @@ from py_agent.types import (
 
 
 class LocalToolSource(ToolSource):
+    """Wraps raw Python functions as Pydantic AI Tools.
+
+    Args:
+        tools: List of callables or existing Pydantic AI ``Tool`` objects.
+        scope: Visibility scope. Defaults to ``"all"``.
+    """
+
     def __init__(self, tools: list, *, scope: str = "all"):
         self._raw_tools = tools
         self._id = f"local_{id(self)}"
@@ -42,6 +49,14 @@ class LocalToolSource(ToolSource):
 
 
 class MCPServerSource(ToolSource):
+    """Wraps an MCP server client for tool discovery.
+
+    Args:
+        server_name: Identifier for this MCP server.
+        client_factory: Callable that returns an MCP client. Called lazily on first ``discover()``.
+        scope: Visibility scope. Defaults to ``"all"``.
+    """
+
     def __init__(self, *, server_name: str, client_factory, scope: str = "all"):
         self._server_name = server_name
         self._client_factory = client_factory
@@ -67,7 +82,14 @@ class MCPServerSource(ToolSource):
 
 
 class SubagentToolSource(ToolSource):
-    """Wrap an async runnable (e.g. a LangGraph graph) as a Pydantic AI Tool."""
+    """Wraps a callable or LangGraph graph as a single Pydantic AI Tool.
+
+    Args:
+        name: Tool name exposed to the agent.
+        runnable: Async callable or object with ``ainvoke``.
+        description: Tool description. Auto-generated if ``None``.
+        scope: Visibility scope. Defaults to ``"subagent"``.
+    """
 
     def __init__(
         self,
@@ -107,6 +129,15 @@ class SubagentToolSource(ToolSource):
 
 
 class ToolLifecycle:
+    """Central tool registry with conflict resolution.
+
+    Maintains a deduplicated set of tools from multiple ``ToolSource`` instances.
+    Local tools win over MCP tools when names collide.
+
+    Args:
+        on_warning: Optional callback for non-fatal errors.
+    """
+
     def __init__(self, *, on_warning=None):
         self._on_warning = on_warning or (lambda msg, exc=None: None)
         self._tools: dict[str, Any] = {}
@@ -114,6 +145,7 @@ class ToolLifecycle:
         self.on(ToolLifecycleEvent.TOOL_CONFLICT, self._default_conflict_handler)
 
     def on(self, event: str, handler: ToolEventHandler) -> None:
+        """Subscribe a handler to a tool lifecycle event."""
         self._handlers.setdefault(event, []).append(handler)
 
     @staticmethod
@@ -151,6 +183,14 @@ class ToolLifecycle:
         return current
 
     async def add_source(self, source: ToolSource) -> list[str]:
+        """Discover tools from ``source``, fire lifecycle events, and resolve conflicts.
+
+        Args:
+            source: Tool source to register.
+
+        Returns:
+            Names of tools that were registered or replaced.
+        """
         tools = await source.discover()
         scope = getattr(source, "scope", "all")
         registered = []
@@ -189,6 +229,14 @@ class ToolLifecycle:
         return registered
 
     def get_for_scope(self, scope: str | None = None) -> list:
+        """Return tools visible in the given scope.
+
+        Args:
+            scope: Scope to filter by. ``None`` returns all tools.
+
+        Returns:
+            List of Pydantic AI ``Tool`` objects.
+        """
         if scope is None:
             return [entry["tool"] for entry in self._tools.values()]
         return [

@@ -13,6 +13,17 @@ from typing import Protocol
 # SessionManager (external seam)
 
 class SessionManager(ABC):
+    """Interface that all session backends must implement.
+
+    Attributes:
+        create_session: Create a new session and return its id.
+        load_history: Load messages for a session, respecting ``protect_turns`` for compaction-aware boundaries.
+        save_messages: Persist a batch of messages for a session.
+        apply_compaction: Store a compaction summary at the given ``boundary_seq``.
+        get_max_message_seq: Return the highest message sequence number, or ``-1`` if empty.
+        ensure_session: Create the session row if it does not already exist.
+    """
+
     @abstractmethod
     async def create_session(self, *, metadata: dict | None = None) -> str: ...
     @abstractmethod
@@ -30,6 +41,15 @@ class SessionManager(ABC):
 # Extension Protocol
 
 class Extension(Protocol):
+    """Protocol for user-provided extensions that hook into the agent lifecycle.
+
+    Attributes:
+        register_tool_sources: Called at initialization; return a list of ``ToolSource`` objects discovered by this extension.
+        on_tool_event: Called during tool registration; receive ``ToolLifecycleEvent`` values such as ``TOOL_CONFLICT`` and return a dict to resolve.
+        on_agent_runner_event: Called during a run; receive ``AgentRunnerEvent`` values and return a dict to modify event data.
+        on_agent_runner_event_stream: Optional async generator for streaming extensions.
+    """
+
     async def register_tool_sources(self) -> list[ToolSource]: ...
     async def on_tool_event(self, event: str, data: dict) -> dict | None: ...
     async def on_agent_runner_event(self, event: str, data: dict) -> dict | None: ...
@@ -48,6 +68,15 @@ class Extension(Protocol):
 # ToolSource
 
 class ToolSource(ABC):
+    """Interface for discovering tools from a source.
+
+    Attributes:
+        discover: Return a list of Pydantic AI ``Tool`` objects.
+        source_type: Return the source kind: ``"local"``, ``"mcp"``, or ``"subagent"``.
+        source_id: Return a unique identifier string for this source.
+        scope: Visibility scope: ``"all"``, ``"main"``, or ``"subagent"``. Defaults to ``"all"``.
+    """
+
     @abstractmethod
     async def discover(self) -> list: ...
     @property
@@ -65,7 +94,7 @@ class ToolSource(ABC):
 # Data enums
 
 class MessageRole(StrEnum):
-    """Message role enum used in the DB schema and by `_infer_role`."""
+    """Message role values stored in the database schema."""
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
@@ -105,6 +134,14 @@ class MessageRole(StrEnum):
 #
 
 class ToolLifecycleEvent(StrEnum):
+    """Events fired during tool registration.
+
+    Attributes:
+        TOOL_DISCOVERED: A tool source discovered a new tool.
+        TOOL_CONFLICT: A name collision occurred between tools.
+        TOOL_REGISTERED: A tool was accepted after conflict resolution.
+        TOOL_REMOVED: A tool was rejected by deduplication or conflict resolution.
+    """
     TOOL_DISCOVERED = "tool_discovered"
     TOOL_CONFLICT = "tool_conflict"
     TOOL_REGISTERED = "tool_registered"
@@ -112,6 +149,7 @@ class ToolLifecycleEvent(StrEnum):
 
 
 class AgentRunnerEvent(StrEnum):
+    """Events fired during a single ``run()`` / ``run_stream()`` execution."""
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     CONTEXT_PREPARE = "context_prepare"
@@ -132,6 +170,12 @@ class AgentRunnerEvent(StrEnum):
 # Event handler type
 
 ToolEventHandler = Callable[[str, dict], Awaitable[dict | None]]
+"""Type alias for tool lifecycle event handlers.
+
+Handler signature: ``Callable[[str, dict], Awaitable[dict | None]]``.
+The string argument is the event name; the dict is event data. Returning a
+dict merges updates back into the event data.
+"""
 
 
 __all__ = [

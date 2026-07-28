@@ -7,10 +7,11 @@ from py_agent.types import SessionManager
 
 
 class SingleTurnSessionManager(SessionManager):
-    """Non-persistent session manager: every ``run()`` starts fresh.
+    """No-persistence backend. Every ``run()`` is a fresh session.
 
-    ``load_history`` always returns an empty list and ``save_messages`` is a
-    no-op.
+    Implements ``SessionManager``. ``load_history`` returns ``[]``,
+    ``save_messages`` is a no-op, and ``apply_compaction`` raises
+    ``NotImplementedError``.
     """
 
     async def create_session(self, *, metadata: dict | None = None) -> str:
