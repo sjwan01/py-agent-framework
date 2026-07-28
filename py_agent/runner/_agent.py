@@ -46,8 +46,8 @@ _VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
 class AgentRunner:
     """Orchestrator that manages the full agent lifecycle.
 
-    Only ``model`` is required. Everything else uses sensible defaults so the
-    minimal use case is a one-liner::
+    Only ``model`` is required. Multi-turn sessions auto-configure context
+    management and compaction. The minimal single-turn use case is a one-liner::
 
         runner = AgentRunner(model=my_model)
 
@@ -74,11 +74,13 @@ class AgentRunner:
             ``LocalSessionManager(db_path=...)`` or
             ``PostgresSessionManager(pg_url=...)`` for persistence.
         context_manager_config: Configuration for automatic context window
-            truncation and compaction detection. ``None`` skips context
-            management entirely (no overhead for single-turn use).
+            truncation and compaction detection. For multi-turn sessions, a
+            default ``ContextManager`` is created automatically if this is unset.
+            Single-turn sessions skip context management when this is ``None``.
         summarizer_config: Configuration for LLM-based context compaction.
-            ``None`` disables compaction. When enabled but ``model`` is unset,
-            the main agent model is reused.
+            For multi-turn sessions, a default ``HarnessSummarizer`` reusing
+            the main model is created automatically if this is unset.
+            Single-turn sessions skip compaction when this is ``None``.
         max_tool_calls_per_turn: Hard limit on tool invocations per turn.
             The model receives a message and continues when exceeded.
             Defaults to ``5``.
