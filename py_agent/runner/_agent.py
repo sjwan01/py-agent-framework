@@ -165,10 +165,9 @@ class AgentRunner:
             )
         elif is_multi:
             self._context_manager = ContextManager()
+            
         self._protect_turns = (
-            context_manager_config.protect_turns
-            if context_manager_config
-            else (5 if is_multi else 0)
+            self._context_manager._protect if self._context_manager else 0
         )
 
         # summarizer: explicit config → from config; multi-turn → defaults
