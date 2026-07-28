@@ -94,7 +94,14 @@ class ToolSource(ABC):
 # Data enums
 
 class MessageRole(StrEnum):
-    """Message role values stored in the database schema."""
+    """Message role values stored in the database schema.
+
+    Attributes:
+        USER: The message came from the user.
+        ASSISTANT: The message came from the model.
+        TOOL: The message is a tool return value.
+        UNKNOWN: The role could not be determined.
+    """
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
@@ -149,7 +156,25 @@ class ToolLifecycleEvent(StrEnum):
 
 
 class AgentRunnerEvent(StrEnum):
-    """Events fired during a single ``run()`` / ``run_stream()`` execution."""
+    """Events fired during a single ``run()`` / ``run_stream()`` execution.
+
+    Attributes:
+        SESSION_START: A new session was created or reused.
+        SESSION_END: The session is finished.
+        CONTEXT_PREPARE: ContextManager has prepared messages (read-only).
+        BEFORE_AGENT_RUN: Last chance for extensions to modify messages.
+        AGENT_START: The final prompt and messages are entering the model.
+        AGENT_END: The model finished generating a response.
+        TOKEN_STREAM: A single token chunk during streaming.
+        TOOL_START: A tool is about to be invoked.
+        TOOL_END: A tool finished executing.
+        TOOL_CALL: Intercept point — block or modify tool arguments.
+        TOOL_RESULT: Intercept point — modify the tool's return value.
+        AFTER_AGENT_RUN: The agent finished but messages are not yet saved.
+        SESSION_SAVE: Messages are about to be persisted — modify delta.
+        COMPACTION_TRIGGER: Compaction was flagged; extensions may cancel.
+        COMPACTION_APPLIED: Compaction completed or was cancelled.
+    """
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     CONTEXT_PREPARE = "context_prepare"
