@@ -320,6 +320,11 @@ class AgentRunner:
                 level = None
             model_settings["thinking"] = cast(Any, level if level is not None else True)
 
+        # We pass the user's "system prompt" as Pydantic AI's `instructions` parameter.
+        # `instructions` are re-sent on every request and are NOT inserted into
+        # message_history. This matches our design: we rebuild Agent per turn and
+        # manage history/load_history ourselves, so we do not want Pydantic AI to
+        # persist a SystemPromptPart that could shadow a later system-prompt change.
         return Agent(
             model=self._model,
             instructions=self._system_prompt,
