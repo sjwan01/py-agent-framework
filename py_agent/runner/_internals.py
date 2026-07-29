@@ -12,6 +12,8 @@ from typing import Any
 
 from pydantic_ai.messages import ModelRequest, ModelResponse
 
+from py_agent.models import BaselineState
+
 
 def messages_to_persist(
     original_history: list[Any], all_messages: list[Any]
@@ -178,3 +180,28 @@ async def get_tools(self: Any) -> list[Any]:
         return tools
     raw_tools: list[Any] = self._raw_tools
     return raw_tools
+
+
+async def build_current_state(self: Any) -> BaselineState:
+    """Construct the current BaselineState from live AgentRunner config.
+
+    Tools are extracted from the currently registered tool list. Skills and
+    context files are left empty until the corresponding mechanisms land.
+
+    Returns:
+        A snapshot of the current agent state for baseline diffing.
+    """
+    tools: dict[str, str] = {}
+    for tool in await self._get_tools():
+        name = getattr(tool, "name", None) or getattr(tool, "__name__", "")
+        description = getattr(tool, "description", "")
+        if name:
+            tools[name] = description
+
+    # TODO: populate skills once the Python skill system lands.
+    skills: dict[str, str] = {}
+
+    # TODO: populate context files once the context-files mechanism lands.
+    context: list[str] = []
+
+    return BaselineState(tools=tools, skills=skills, context=context)

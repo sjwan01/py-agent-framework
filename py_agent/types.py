@@ -9,6 +9,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import StrEnum
 from typing import Any, Protocol
 
+from py_agent.models import BaselineState
+
 # SessionManager (external seam)
 
 class SessionManager(ABC):
@@ -21,6 +23,8 @@ class SessionManager(ABC):
         apply_compaction: Store a compaction summary at the given ``boundary_seq``.
         get_max_message_seq: Return the highest message sequence number, or ``-1`` if empty.
         ensure_session: Create the session row if it does not already exist.
+        save_baseline: Persist the current system prompt and baseline state for a session.
+        load_latest_baseline: Load the most recently saved baseline, if any.
     """
 
     @abstractmethod
@@ -45,6 +49,14 @@ class SessionManager(ABC):
     async def ensure_session(
         self, session_id: str, *, metadata: dict[str, Any] | None = None
     ) -> str: ...
+    @abstractmethod
+    async def save_baseline(
+        self, session_id: str, system_prompt: str, state: BaselineState
+    ) -> None: ...
+    @abstractmethod
+    async def load_latest_baseline(
+        self, session_id: str
+    ) -> tuple[str, BaselineState] | None: ...
 
 
 # Extension Protocol
@@ -137,7 +149,7 @@ class MessageRole(StrEnum):
 #   run() / run_stream()
 #   ├── SESSION_START
 #   ├── load_history
-#   ├── CONTEXT_PREPARE          # read-only: Extension observes ContextManager output
+#   ├── CONTEXT_PREPARE          # read-only: Extension observes context preparation output
 #   ├── BEFORE_AGENT_RUN         # writable: Extension's only entry point to modify messages
 #   ├── AGENT_START              # read-only: prompt + final messages entering the Agent
 #   │   ├── (Pydantic AI tool loop)
@@ -174,7 +186,7 @@ class AgentRunnerEvent(StrEnum):
     Attributes:
         SESSION_START: A new session was created or reused.
         SESSION_END: The session is finished.
-        CONTEXT_PREPARE: ContextManager has prepared messages (read-only).
+        CONTEXT_PREPARE: Context preparation has finished (read-only).
         BEFORE_AGENT_RUN: Last chance for extensions to modify messages.
         AGENT_START: The final prompt and messages are entering the model.
         AGENT_END: The model finished generating a response.

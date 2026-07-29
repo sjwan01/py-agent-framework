@@ -25,9 +25,9 @@ from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
 from py_agent._compaction import HarnessSummarizer
-from py_agent.context import BaselineState, ContextManager
+from py_agent._context import _prepare_context
 from py_agent.models import (
-    ContextManagerConfig,
+    ContextConfig,
     RunResult,
     SummarizerConfig,
 )
@@ -72,9 +72,9 @@ class AgentRunner:
             ``SingleTurnSessionManager`` (every run is a fresh session). Pass
             ``LocalSessionManager(db_path=...)`` or
             ``PostgresSessionManager(pg_url=...)`` for persistence.
-        context_manager_config: Configuration for automatic context window
+        context_config: Configuration for automatic context window
             truncation and compaction detection. For multi-turn sessions, a
-            default ``ContextManager`` is created automatically if this is
+            default ``ContextConfig`` is created automatically if this is
             unset. Ignored when using ``SingleTurnSessionManager`` (the default).
         summarizer_config: Configuration for LLM-based context compaction.
             For multi-turn sessions, a default ``HarnessSummarizer`` reusing
@@ -106,6 +106,7 @@ class AgentRunner:
     _notify_streamers = staticmethod(_internals.notify_streamers)
     _drain_pending = staticmethod(_internals.drain_pending)
     _build_capabilities = _internals.build_capabilities
+    _build_current_state = _internals.build_current_state
     _fire = _internals.fire
     _fire_notify = _internals.fire_notify
     _get_tools = _internals.get_tools
@@ -126,7 +127,7 @@ class AgentRunner:
         extensions: list[Any] | None = None,
         tools: list[Any] | tuple[()] = (),
         session_manager: SessionManager | None = None,
-        context_manager_config: ContextManagerConfig | None = None,
+        context_config: ContextConfig | None = None,
         summarizer_config: SummarizerConfig | None = None,
         max_tool_calls_per_turn: int = 5,
         parallel_tool_calls: bool = False,
@@ -153,29 +154,19 @@ class AgentRunner:
         self._session_manager = session_manager or SingleTurnSessionManager()
         is_multi = not isinstance(self._session_manager, SingleTurnSessionManager)
 
-        # context manager: single-turn → never; multi-turn → from config or
+        # context config: single-turn → never; multi-turn → from config or
         # sensible defaults
-        self._context_manager: ContextManager | None = None
+        self._context_config: ContextConfig | None = None
         self._compaction_summarizer: HarnessSummarizer | None = None
         self._protect_turns = 0
 
         if is_multi:
-            if context_manager_config is not None:
-                context_manager = ContextManager(
-                    context_window_cap=context_manager_config.context_window,
-                    low_watermark_ratio=context_manager_config.low_watermark_ratio,
-                    high_watermark_ratio=context_manager_config.high_watermark_ratio,
-                    protect_turns=context_manager_config.protect_turns,
-                    truncate_chars=context_manager_config.truncate_tool_result_chars,
-                )
-            else:
-                context_manager = ContextManager()
-            self._context_manager = context_manager
-            self._protect_turns = context_manager._protect
+            self._context_config = context_config or ContextConfig()
+            self._protect_turns = self._context_config.protect_turns
 
             if summarizer_config is not None:
                 default_max = int(
-                    min(32_768, max(context_manager._context_window_cap * 0.1, 8_192))
+                    min(32_768, max(self._context_config.context_window_cap * 0.1, 8_192))
                 )
                 self._compaction_summarizer = HarnessSummarizer(
                     model=summarizer_config.model or model,
@@ -209,9 +200,10 @@ class AgentRunner:
         Returns:
             A tuple of ``(session_id, history, original_history, needs_compaction)``:
 
-            - history: message list after ContextManager truncation and extension injection
-            - original_history: raw list loaded from the DB (used to compute the turn delta)
-            - needs_compaction: whether ContextManager flagged compaction as needed
+            - history: message list after context preparation and extension injection
+            - original_history: history after context preparation, before extension injection
+                (used to compute the turn delta)
+            - needs_compaction: whether context preparation flagged compaction as needed
         """
         # step 1: create or reuse session
         if session_id is None:
@@ -226,24 +218,43 @@ class AgentRunner:
         history = await self._session_manager.load_history(
             session_id, protect_turns=self._protect_turns
         )
-        # keep the original copy — extensions may inject messages into history,
-        # and we need original_history to compute the real delta for this turn
-        original_history = list(history)
 
-        # step 3: ContextManager.prepare — truncation, baseline diff injection,
-        # and compaction flag (skipped when no ContextManager is configured)
+        # step 3: load baseline, build current state, detect system prompt changes,
+        # and run prepare() for truncation / diff injection (skipped when no
+        # ContextConfig is configured)
         needs_compaction = False
-        if self._context_manager is not None:
+        if self._context_config is not None:
             try:
-                prepared = await self._context_manager.prepare(
+                row = await self._session_manager.load_latest_baseline(session_id)
+                frozen_sp = row[0] if row else None
+                frozen_baseline = row[1] if row else None
+                current_state = await self._build_current_state()
+
+                # System prompt changes are handled here, not in prepare(), so that
+                # they silently refresh the stored baseline without injecting a diff.
+                if frozen_sp is None or frozen_sp != self._system_prompt:
+                    await self._session_manager.save_baseline(
+                        session_id,
+                        system_prompt=self._system_prompt,
+                        state=current_state,
+                    )
+                    frozen_baseline = current_state
+
+                prepared = await _prepare_context(
                     history,
-                    system_prompt=self._system_prompt,
-                    current_state=BaselineState(),
+                    frozen_baseline=frozen_baseline,
+                    current_state=current_state,
+                    config=self._context_config,
                 )
                 history = prepared.messages
                 needs_compaction = prepared.needs_compaction
             except Exception as exc:  # pragma: no cover - fail-open
-                self._on_warning(f"ContextManager prepare failed: {exc}", exc)
+                self._on_warning(f"Context prepare failed: {exc}", exc)
+
+        # keep the original copy after context preparation so transient diff
+        # messages are not persisted, while extension-injected messages (which
+        # happen after this point) are still captured in the turn delta
+        original_history = list(history)
 
         # step 4: CONTEXT_PREPARE event (read-only — extension return values are ignored,
         # the only place to modify messages is the next BEFORE_AGENT_RUN step)

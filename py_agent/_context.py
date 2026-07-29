@@ -1,104 +1,80 @@
-"""ContextManager — watermark truncation and baseline freezing."""
+"""Context preparation — watermark truncation and baseline diff injection."""
 from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-from pydantic import BaseModel, Field
-from pydantic_ai.messages import ModelRequest, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolReturnPart,
+)
 
+from py_agent.models import BaselineState, ContextConfig, PreparedContext
 from py_agent.session._shared import _is_turn_start
 
 
-class PreparedContext(BaseModel):
-    """Output of ``ContextManager.prepare()``."""
+async def prepare(
+    messages: list[Any],
+    *,
+    frozen_baseline: BaselineState | None,
+    current_state: BaselineState,
+    config: ContextConfig,
+) -> PreparedContext:
+    """Prepare messages for the agent run.
 
-    messages: list[Any] = Field(default_factory=list)
-    needs_compaction: bool = False
-    tokens_used: int = 0
+    Injects transient diff messages when the current state differs from the
+    frozen baseline, then applies watermark truncation. Diff messages are not
+    persisted; they live only in the returned message list.
 
+    Args:
+        messages: Raw message history loaded from the session backend.
+        frozen_baseline: Last persisted baseline state, if any.
+        current_state: State built from the current AgentRunner configuration.
+        config: Immutable truncation / watermark configuration.
 
-class BaselineState(BaseModel):
-    """Snapshot of skills, tools, and context at baseline time for diff injection."""
+    Returns:
+        Prepared context with possibly injected diff messages and a compaction flag.
+    """
+    # Work on a copy so the caller's list is not mutated and prepare stays idempotent.
+    messages = list(messages)
 
-    skills: dict[str, str] = Field(default_factory=dict)
-    tools: dict[str, str] = Field(default_factory=dict)
-    context: list[str] = Field(default_factory=list)
+    if frozen_baseline is not None:
+        diff = _compute_diff(frozen_baseline, current_state)
+        if diff:
+            messages = _inject_diff(messages, diff)
 
+    context_cap = config.context_window_cap
+    low_mark = context_cap * config.low_watermark_ratio
+    high_mark = context_cap * config.high_watermark_ratio
 
-class ContextManager:
-    def __init__(
-        self,
-        *,
-        low_watermark_ratio: float = 0.6,
-        high_watermark_ratio: float = 0.75,
-        protect_turns: int = 5,
-        truncate_chars: int = 1_000,
-        context_window_cap: int = 128_000,
-    ):
-        if not (0 < low_watermark_ratio < high_watermark_ratio < 1):
-            raise ValueError(
-                f"watermark ratios must satisfy 0 < low ({low_watermark_ratio}) "
-                f"< high ({high_watermark_ratio}) < 1"
-            )
-        if protect_turns < 0:
-            raise ValueError(
-                f"protect_turns must be >= 0, got {protect_turns}"
-            )
-        self._low = low_watermark_ratio
-        self._high = high_watermark_ratio
-        self._protect = protect_turns
-        self._truncate_chars = truncate_chars
-        self._context_window_cap = context_window_cap
-        self._frozen_baseline: str | None = None
-        self._baseline_state: BaselineState | None = None
+    total_tokens, boundary = _estimate_and_find_boundary(
+        messages, config.protect_turns
+    )
 
-    async def prepare(
-        self,
-        messages: list[Any],
-        *,
-        system_prompt: str,
-        current_state: BaselineState,
-    ) -> PreparedContext:
-        # work on a copy so the caller's list is not mutated and prepare stays idempotent
-        messages = list(messages)
-
-        if self._frozen_baseline is None:
-            self._frozen_baseline = system_prompt
-            self._baseline_state = current_state
-        else:
-            baseline = self._baseline_state or BaselineState()
-            diff = _compute_diff(baseline, current_state)
-            if diff:
-                messages = _inject_diff(messages, diff)
-
-        context_cap = self._context_window_cap
-        low_mark = context_cap * self._low
-        high_mark = context_cap * self._high
-
-        total_tokens, boundary = _estimate_and_find_boundary(messages, self._protect)
-
-        if total_tokens <= low_mark:
-            return PreparedContext(
-                messages=messages,
-                needs_compaction=total_tokens > high_mark,
-                tokens_used=total_tokens,
-            )
-
-        messages, tokens_after = _truncate_and_estimate(
-            messages, boundary, self._truncate_chars
-        )
+    if total_tokens <= low_mark:
         return PreparedContext(
             messages=messages,
-            needs_compaction=tokens_after > high_mark,
-            tokens_used=tokens_after,
+            needs_compaction=total_tokens > high_mark,
+            tokens_used=total_tokens,
         )
+
+    messages, tokens_after = _truncate_and_estimate(
+        messages, boundary, config.truncate_chars
+    )
+    return PreparedContext(
+        messages=messages,
+        needs_compaction=tokens_after > high_mark,
+        tokens_used=tokens_after,
+    )
 
 
 # Single forward pass: estimate tokens and find the turn boundary.
 # Merges the former _default_estimate and _find_turn_boundary helpers.
 # Walks forward once, accumulating characters and recording each user turn start.
+
 
 def _estimate_and_find_boundary(
     messages: list[Any], protect: int
@@ -133,6 +109,7 @@ def _estimate_and_find_boundary(
 # Single forward pass: truncate old tool results and re-estimate.
 # Merges the former _truncate_old_tool_results and the second estimation pass.
 # Truncates old tool results before the boundary while accumulating the truncated character count.
+
 
 def _truncate_and_estimate(
     messages: list[Any], boundary: int, max_chars: int
@@ -183,6 +160,7 @@ def _truncate_and_estimate(
 
 
 def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
+    """Compute a human-readable diff between two baseline states."""
     lines: list[str] = []
 
     for name, desc in current.skills.items():
@@ -216,12 +194,29 @@ def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
 
 
 def _inject_diff(messages: list[Any], diff: str) -> list[Any]:
+    """Insert a transient diff message before the latest turn start.
+
+    Uses a ``ModelResponse`` with a ``TextPart`` rather than a user request.
+    Pydantic AI merges consecutive ``UserPromptPart`` messages into a single
+    ``ModelRequest``, which forces the diff to be re-persisted; a response
+    message stays separate and is excluded from persistence because it is
+    captured in ``original_history`` after context preparation.
+    """
     ts = datetime.now(timezone.utc)
     for i in range(len(messages) - 1, -1, -1):
         if _is_turn_start(messages[i]):
-            messages.insert(i, ModelRequest(
-                parts=[UserPromptPart(content=f"[System config changed]\n{diff}", timestamp=ts)],
-                kind="request", timestamp=ts,
-            ))
+            messages.insert(
+                i,
+                ModelResponse(
+                    parts=[
+                        TextPart(
+                            content=f"[System config changed]\n{diff}",
+                            part_kind="text",
+                        )
+                    ],
+                    kind="response",
+                    timestamp=ts,
+                ),
+            )
             break
     return messages

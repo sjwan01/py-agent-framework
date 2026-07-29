@@ -11,6 +11,7 @@ from uuid import uuid4
 import aiosqlite
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
+from py_agent.models import BaselineState
 from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from py_agent.types import SessionManager
 
@@ -50,6 +51,17 @@ CREATE TABLE IF NOT EXISTS compactions (
 
 CREATE INDEX IF NOT EXISTS idx_compactions_session_boundary
     ON compactions(session_id, boundary_seq);
+
+CREATE TABLE IF NOT EXISTS baselines (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id),
+    system_prompt TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_baselines_session
+    ON baselines(session_id, id DESC);
 """
 
 
@@ -262,3 +274,32 @@ class LocalSessionManager(SessionManager):
                 (session_id, boundary_seq, summary),
             )
             await db.commit()
+
+    async def save_baseline(
+        self, session_id: str, system_prompt: str, state: BaselineState
+    ) -> None:
+        """Persist a (system_prompt, state) pair for the session."""
+        async with self._connect() as db:
+            await db.execute(
+                "INSERT INTO baselines (session_id, system_prompt, state) VALUES (?, ?, ?)",
+                (session_id, system_prompt, state.model_dump_json()),
+            )
+            await db.commit()
+
+    async def load_latest_baseline(
+        self, session_id: str
+    ) -> tuple[str, BaselineState] | None:
+        """Load the most recent baseline for the session, if any."""
+        async with self._connect() as db:
+            cursor = await db.execute(
+                "SELECT system_prompt, state FROM baselines "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT 1",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return (
+                row["system_prompt"],
+                BaselineState.model_validate_json(row["state"]),
+            )

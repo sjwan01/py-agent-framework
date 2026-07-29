@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from py_agent._context import _compute_diff
 from py_agent.tools import LocalToolSource, ToolLifecycle
 from py_agent.types import ToolLifecycleEvent
 
@@ -83,6 +84,9 @@ async def trigger_compaction(self: Any, session_id: str) -> None:
        will be loaded).
     3. Summarize all messages (skipped if the summarizer is ``None``).
     4. Write the summary into the ``compactions`` table.
+    5. If the current state has changed, refresh the persisted baseline.
+       Compaction already invalidates the cache, so this is the safe moment to
+       absorb accumulated state diffs into the system prompt.
     """
     try:
         # raw maximum, unaffected by the compactions table
@@ -103,6 +107,19 @@ async def trigger_compaction(self: Any, session_id: str) -> None:
             summary=summary,
             boundary_seq=boundary_seq,
         )
+
+        # Compaction already invalidates the cache, so refresh the baseline if
+        # the state has drifted. Normal turns keep the baseline frozen to avoid
+        # cache misses from system prompt changes.
+        row = await self._session_manager.load_latest_baseline(session_id)
+        frozen_baseline = row[1] if row else None
+        current_state = await self._build_current_state()
+        if frozen_baseline is None or _compute_diff(frozen_baseline, current_state):
+            await self._session_manager.save_baseline(
+                session_id,
+                system_prompt=self._system_prompt,
+                state=current_state,
+            )
     except Exception as exc:  # pragma: no cover - fail-open
         self._on_warning(f"Compaction failed for session {session_id}: {exc}", exc)
     finally:

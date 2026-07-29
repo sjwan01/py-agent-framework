@@ -1,0 +1,16 @@
+# Ruff linter configuration for py_agent.
+#
+# Run:  ruff check --fix py_agent/ tests/
+
+target-version = "py312"
+
+exclude = ["venv", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".git"]
+
+[lint]
+select = [
+    "I",   # isort — import order (stdlib → third-party → first-party)
+    "F",   # pyflakes — unused imports, undefined names, duplicate args, etc.
+]
+
+[lint.isort]
+known-first-party = ["py_agent"]
