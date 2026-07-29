@@ -31,7 +31,7 @@ class HarnessSummarizer:
             kwargs["summary_prompt"] = summary_prompt
         self._strategy = SummarizingCompaction(**kwargs)
 
-    async def summarize(self, messages: list) -> str:
+    async def summarize(self, messages: list[Any]) -> str:
         ctx = cast(Any, SimpleNamespace(usage=RunUsage()))
         compacted = await self._strategy.compact(messages, ctx)
         for msg in compacted:

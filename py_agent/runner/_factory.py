@@ -6,13 +6,15 @@ is an ``AgentRunner`` instance.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from py_agent.tools import LocalToolSource, ToolLifecycle
 from py_agent.types import ToolLifecycleEvent
 
 
 # Lazy tool lifecycle initialization (called on the first run).
 
-async def ensure_tool_lifecycle(self):
+async def ensure_tool_lifecycle(self: Any) -> Any:
     """Lazily initialize ``ToolLifecycle`` and register tools from all sources.
 
     Called once during the first ``run()`` / ``run_stream()`` invocation and
@@ -70,7 +72,7 @@ async def ensure_tool_lifecycle(self):
 
 # Compaction trigger.
 
-async def trigger_compaction(self, session_id: str) -> None:
+async def trigger_compaction(self: Any, session_id: str) -> None:
     """Asynchronously compact the history for the current session.
 
     Triggered from ``_finalize_run`` via ``asyncio.create_task`` so it does not
@@ -104,3 +106,5 @@ async def trigger_compaction(self, session_id: str) -> None:
         )
     except Exception as exc:  # pragma: no cover - fail-open
         self._on_warning(f"Compaction failed for session {session_id}: {exc}", exc)
+    finally:
+        self._compaction_pending.discard(session_id)

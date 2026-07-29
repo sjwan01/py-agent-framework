@@ -7,7 +7,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Awaitable
 from enum import StrEnum
-from typing import Protocol
+from typing import Any, Protocol
 
 
 # SessionManager (external seam)
@@ -25,17 +25,27 @@ class SessionManager(ABC):
     """
 
     @abstractmethod
-    async def create_session(self, *, metadata: dict | None = None) -> str: ...
+    async def create_session(
+        self, *, metadata: dict[str, Any] | None = None
+    ) -> str: ...
     @abstractmethod
-    async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list: ...
+    async def load_history(
+        self, session_id: str, *, protect_turns: int = 0
+    ) -> list[Any]: ...
     @abstractmethod
-    async def save_messages(self, session_id: str, messages: list) -> None: ...
+    async def save_messages(
+        self, session_id: str, messages: list[Any]
+    ) -> None: ...
     @abstractmethod
-    async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None: ...
+    async def apply_compaction(
+        self, session_id: str, summary: str, boundary_seq: int
+    ) -> None: ...
     @abstractmethod
     async def get_max_message_seq(self, session_id: str) -> int: ...
     @abstractmethod
-    async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str: ...
+    async def ensure_session(
+        self, session_id: str, *, metadata: dict[str, Any] | None = None
+    ) -> str: ...
 
 
 # Extension Protocol
@@ -51,18 +61,22 @@ class Extension(Protocol):
     """
 
     async def register_tool_sources(self) -> list[ToolSource]: ...
-    async def on_tool_event(self, event: str, data: dict) -> dict | None: ...
-    async def on_agent_runner_event(self, event: str, data: dict) -> dict | None: ...
+    async def on_tool_event(
+        self, event: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None: ...
+    async def on_agent_runner_event(
+        self, event: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None: ...
     async def on_agent_runner_event_stream(
-        self, event: str, data: dict
-    ) -> AsyncIterator[dict]:
+        self, event: str, data: dict[str, Any]
+    ) -> AsyncIterator[dict[str, Any]]:
         """Optional async generator for streaming extensions.
 
         If the extension does not override this, ``run()`` and ``run_stream()``
         ignore it.
         """
         if False:  # pragma: no cover
-            yield {}
+            yield {}  # type: ignore[unreachable]
 
 
 # ToolSource
@@ -78,7 +92,7 @@ class ToolSource(ABC):
     """
 
     @abstractmethod
-    async def discover(self) -> list: ...
+    async def discover(self) -> list[Any]: ...
     @property
     @abstractmethod
     def source_type(self) -> str: ...
@@ -194,7 +208,9 @@ class AgentRunnerEvent(StrEnum):
 
 # Event handler type
 
-ToolEventHandler = Callable[[str, dict], Awaitable[dict | None]]
+ToolEventHandler = Callable[
+    [str, dict[str, Any]], Awaitable[dict[str, Any] | None]
+]
 """Type alias for tool lifecycle event handlers.
 
 Handler signature: ``Callable[[str, dict], Awaitable[dict | None]]``.

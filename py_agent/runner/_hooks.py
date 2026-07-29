@@ -27,12 +27,12 @@ from py_agent.types import AgentRunnerEvent
 
 
 def build_hooks(
-    self,
+    self: Any,
     session_id: str,
     *,
     pending: list[Any] | None = None,
     streamers: list[Any] | None = None,
-):
+) -> Hooks:
     """Build a Pydantic AI ``Hooks`` instance.
 
     Args:
@@ -54,7 +54,9 @@ def build_hooks(
 
     # Stage 1: before tool execution
     @hooks.on.before_tool_execute
-    async def _on_tool_start(ctx, *, call, tool_def, args):
+    async def _on_tool_start(
+        ctx: Any, *, call: Any, tool_def: Any, args: Any
+    ) -> Any:
         """Notify extensions that the model decided to call ``call.tool_name``."""
         payload = {
             "session_id": session_id,
@@ -68,7 +70,9 @@ def build_hooks(
 
     # Stage 2: actual tool execution (blockable / arg mutable)
     @hooks.on.tool_execute
-    async def _on_tool_call(ctx, *, call, tool_def, args, handler):
+    async def _on_tool_call(
+        ctx: Any, *, call: Any, tool_def: Any, args: Any, handler: Any
+    ) -> Any:
         """Intercept the tool call: limit count, fire TOOL_CALL, then run.
 
         ``handler(args)`` is Pydantic AI's default execution logic; calling it
@@ -104,7 +108,9 @@ def build_hooks(
 
     # Stage 3: after tool execution completes
     @hooks.on.after_tool_execute
-    async def _on_tool_result(ctx, *, call, tool_def, args, result):
+    async def _on_tool_result(
+        ctx: Any, *, call: Any, tool_def: Any, args: Any, result: Any
+    ) -> Any:
         """Tool execution finished: fire TOOL_RESULT, allow mutation, fire TOOL_END."""
         # TOOL_RESULT: extensions may modify content / is_error
         result_data = {

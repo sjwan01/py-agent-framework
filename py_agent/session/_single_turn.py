@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from typing import Any
+
 from py_agent.types import SessionManager
 
 
@@ -14,19 +16,27 @@ class SingleTurnSessionManager(SessionManager):
     ``NotImplementedError``.
     """
 
-    async def create_session(self, *, metadata: dict | None = None) -> str:
+    async def create_session(
+        self, *, metadata: dict[str, Any] | None = None
+    ) -> str:
         # generate a UUID as session_id without persisting it
         return str(uuid4())
 
-    async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str:
+    async def ensure_session(
+        self, session_id: str, *, metadata: dict[str, Any] | None = None
+    ) -> str:
         # single-turn mode does not persist, so no session row is needed
         return session_id
 
-    async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
+    async def load_history(
+        self, session_id: str, *, protect_turns: int = 0
+    ) -> list[Any]:
         # no history, always return empty
         return []
 
-    async def save_messages(self, session_id: str, messages: list) -> None:
+    async def save_messages(
+        self, session_id: str, messages: list[Any]
+    ) -> None:
         # no persistence, do nothing
         pass
 

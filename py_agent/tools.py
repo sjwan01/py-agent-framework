@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from typing import Any
 
 from pydantic_ai import Tool as PydanticTool
@@ -21,12 +22,12 @@ class LocalToolSource(ToolSource):
         scope: Visibility scope. Defaults to ``"all"``.
     """
 
-    def __init__(self, tools: list, *, scope: str = "all"):
+    def __init__(self, tools: list[Any], *, scope: str = "all"):
         self._raw_tools = tools
         self._id = f"local_{id(self)}"
         self._scope = scope
 
-    async def discover(self) -> list:
+    async def discover(self) -> list[Any]:
         result = []
         for t in self._raw_tools:
             if isinstance(t, PydanticTool):
@@ -57,13 +58,19 @@ class MCPServerSource(ToolSource):
         scope: Visibility scope. Defaults to ``"all"``.
     """
 
-    def __init__(self, *, server_name: str, client_factory, scope: str = "all"):
+    def __init__(
+        self,
+        *,
+        server_name: str,
+        client_factory: Callable[[], Any],
+        scope: str = "all",
+    ):
         self._server_name = server_name
         self._client_factory = client_factory
-        self._client = None
+        self._client: Any | None = None
         self._scope = scope
 
-    async def discover(self) -> list:
+    async def discover(self) -> list[Any]:
         if self._client is None:
             self._client = self._client_factory()
         return list(await self._client.list_tools())
@@ -94,7 +101,7 @@ class SubagentToolSource(ToolSource):
     def __init__(
         self,
         name: str,
-        runnable,
+        runnable: Any,
         *,
         description: str | None = None,
         scope: str = "subagent",
@@ -104,11 +111,11 @@ class SubagentToolSource(ToolSource):
         self._description = description or f"Subagent tool: {name}"
         self._scope = scope
 
-    async def discover(self) -> list:
+    async def discover(self) -> list[Any]:
         if inspect.iscoroutinefunction(self._runnable):
             tool_func = self._runnable
         else:
-            async def tool_func(**kwargs):
+            async def tool_func(**kwargs: Any) -> Any:
                 if hasattr(self._runnable, "ainvoke"):
                     return await self._runnable.ainvoke(kwargs)
                 return await self._runnable(**kwargs)
@@ -138,8 +145,15 @@ class ToolLifecycle:
         on_warning: Optional callback for non-fatal errors.
     """
 
-    def __init__(self, *, on_warning=None):
-        self._on_warning = on_warning or (lambda msg, exc=None: None)
+    def __init__(
+        self,
+        *,
+        on_warning: Callable[[str, Exception | None], None] | None = None,
+    ):
+        def _default_warning(msg: str, exc: Exception | None = None) -> None:
+            return None
+
+        self._on_warning = on_warning or _default_warning
         self._tools: dict[str, Any] = {}
         self._handlers: dict[str, list[ToolEventHandler]] = {}
         self.on(ToolLifecycleEvent.TOOL_CONFLICT, self._default_conflict_handler)
@@ -161,7 +175,7 @@ class ToolLifecycle:
             return {"action": "replace"}
         return {"action": "keep"}
 
-    async def _fire(self, event: str, data: dict) -> dict:
+    async def _fire(self, event: str, data: dict[str, Any]) -> dict[str, Any]:
         """Fire event to all subscribed handlers in chain mode.
 
         Each handler receives the current data (including updates from previous
@@ -228,7 +242,7 @@ class ToolLifecycle:
                 })
         return registered
 
-    def get_for_scope(self, scope: str | None = None) -> list:
+    def get_for_scope(self, scope: str | None = None) -> list[Any]:
         """Return tools visible in the given scope.
 
         Args:

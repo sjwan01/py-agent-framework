@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Any, cast
 from uuid import uuid4
 
 import aiosqlite
@@ -45,6 +47,9 @@ CREATE TABLE IF NOT EXISTS compactions (
     summary TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE INDEX IF NOT EXISTS idx_compactions_session_boundary
+    ON compactions(session_id, boundary_seq);
 """
 
 
@@ -64,7 +69,7 @@ class LocalSessionManager(SessionManager):
         self._schema_initialized = False
 
     @asynccontextmanager
-    async def _connect(self):
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
         """Acquire a SQLite connection, creating tables on first connect."""
         db = await aiosqlite.connect(self._db_path)
         # enable column access on rows, e.g. row["content"]
@@ -80,7 +85,9 @@ class LocalSessionManager(SessionManager):
 
     # SessionManager interface implementation
 
-    async def create_session(self, *, metadata: dict | None = None) -> str:
+    async def create_session(
+        self, *, metadata: dict[str, Any] | None = None
+    ) -> str:
         """Insert a row into ``sessions`` and return the new ``session_id``."""
         sid = str(uuid4())
         async with self._connect() as db:
@@ -91,7 +98,9 @@ class LocalSessionManager(SessionManager):
             await db.commit()
         return sid
 
-    async def ensure_session(self, session_id: str, *, metadata: dict | None = None) -> str:
+    async def ensure_session(
+        self, session_id: str, *, metadata: dict[str, Any] | None = None
+    ) -> str:
         """Ensure the session row exists, creating it if necessary."""
         async with self._connect() as db:
             await db.execute(
@@ -101,38 +110,52 @@ class LocalSessionManager(SessionManager):
             await db.commit()
         return session_id
 
-    async def load_history(self, session_id: str, *, protect_turns: int = 0) -> list:
+    async def load_history(
+        self, session_id: str, *, protect_turns: int = 0
+    ) -> list[Any]:
         """Load messages for the session.
 
-        Checks compaction first: if no compaction record exists, loads all
-        messages. If a record exists and at least ``protect_turns`` user turns
-        have passed the boundary, loads only messages with ``seq > boundary``
-        and prepends a summary.
+        Walks backwards from the latest message to find the ``protect_turns``
+        most recent user turns, then selects a compaction whose boundary falls
+        before that protected region. Messages before the boundary are
+        replaced by the compaction summary; messages after are loaded in full.
+
+        Falls back to loading all messages when no eligible compaction exists.
         """
         async with self._connect() as db:
-            # 1. fetch the latest compaction
+            # 1. get the most recent message seq
             cursor = await db.execute(
-                "SELECT boundary_seq, summary FROM compactions WHERE session_id = ? ORDER BY boundary_seq DESC LIMIT 1",
+                "SELECT COALESCE(MAX(message_seq), -1) FROM messages WHERE session_id = ?",
                 (session_id,),
+            )
+            row = await cursor.fetchone()
+            max_seq = int(cast(aiosqlite.Row, row)[0])
+            if max_seq < 0:
+                return []
+
+            # 2. walk backwards to find the cutoff sequence that protects
+            #    the last ``protect_turns`` user turns
+            cutoff_seq = await self._find_cutoff_seq(
+                db, session_id, max_seq, protect_turns
+            )
+
+            # 3. pick a compaction whose boundary falls strictly before the
+            #    protected region
+            cursor = await db.execute(
+                "SELECT boundary_seq, summary FROM compactions "
+                "WHERE session_id = ? AND boundary_seq < ? "
+                "ORDER BY boundary_seq DESC LIMIT 1",
+                (session_id, cutoff_seq),
             )
             comp_row = await cursor.fetchone()
 
             if comp_row is None:
-                # no compaction → load everything
                 return await self._load_all_messages(db, session_id)
 
             boundary_seq = comp_row["boundary_seq"]
             summary = comp_row["summary"]
-
-            # 2. load only messages after the boundary and count user turns
             recent = await self._load_messages_after(db, session_id, boundary_seq)
-            turns_after = sum(1 for m in recent if _is_turn_start(m))
 
-            if turns_after < protect_turns:
-                # not enough turns past the boundary → fall back to full history
-                return await self._load_all_messages(db, session_id)
-
-            # 3. enable compaction: summary + messages after the boundary
             ts = datetime.now(timezone.utc)
             summary_msg = ModelRequest(
                 parts=[UserPromptPart(
@@ -144,6 +167,38 @@ class LocalSessionManager(SessionManager):
             )
             return [summary_msg] + recent
 
+    async def _find_cutoff_seq(
+        self,
+        db: aiosqlite.Connection,
+        session_id: str,
+        max_seq: int,
+        protect_turns: int,
+    ) -> int:
+        """Walk backwards from *max_seq* to find the sequence number
+        after *protect_turns* user turns.
+
+        Returns ``max_seq + 1`` when *protect_turns* is 0 (no protection —
+        every compaction is eligible). Returns 0 when there aren't enough
+        turns to satisfy *protect_turns* (fall back to full history).
+        """
+        if protect_turns <= 0:
+            return max_seq + 1
+
+        cursor = await db.execute(
+            "SELECT message_seq, content FROM messages "
+            "WHERE session_id = ? AND message_seq <= ? "
+            "ORDER BY message_seq DESC",
+            (session_id, max_seq),
+        )
+        turns = 0
+        async for row in cursor:
+            msg = _MessageAdapter.validate_json(row["content"].encode())
+            if _is_turn_start(msg):
+                turns += 1
+                if turns >= protect_turns:
+                    return int(row["message_seq"])
+        return 0
+
     async def get_max_message_seq(self, session_id: str) -> int:
         """Return the current maximum ``message_seq`` for the session, or ``-1`` if empty."""
         async with self._connect() as db:
@@ -152,9 +207,11 @@ class LocalSessionManager(SessionManager):
                 (session_id,),
             )
             row = await cursor.fetchone()
-            return row[0]
+            return int(cast(aiosqlite.Row, row)[0])
 
-    async def _load_all_messages(self, db, session_id: str) -> list:
+    async def _load_all_messages(
+        self, db: aiosqlite.Connection, session_id: str
+    ) -> list[Any]:
         cursor = await db.execute(
             "SELECT content FROM messages WHERE session_id = ? ORDER BY message_seq",
             (session_id,),
@@ -162,7 +219,9 @@ class LocalSessionManager(SessionManager):
         rows = await cursor.fetchall()
         return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
 
-    async def _load_messages_after(self, db, session_id: str, boundary_seq: int) -> list:
+    async def _load_messages_after(
+        self, db: aiosqlite.Connection, session_id: str, boundary_seq: int
+    ) -> list[Any]:
         cursor = await db.execute(
             "SELECT content FROM messages WHERE session_id = ? AND message_seq > ? ORDER BY message_seq",
             (session_id, boundary_seq),
@@ -170,7 +229,9 @@ class LocalSessionManager(SessionManager):
         rows = await cursor.fetchall()
         return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
 
-    async def save_messages(self, session_id: str, messages: list) -> None:
+    async def save_messages(
+        self, session_id: str, messages: list[Any]
+    ) -> None:
         """Append a batch of new messages (this turn's delta) to the ``messages`` table.
 
         Each message gets the next ``message_seq`` starting from the current
@@ -182,7 +243,7 @@ class LocalSessionManager(SessionManager):
                 (session_id,),
             )
             row = await cursor.fetchone()
-            seq = row["next_seq"]
+            seq = int(cast(aiosqlite.Row, row)["next_seq"])
             for msg in messages:
                 role = _infer_role(msg)
                 content = _MessageAdapter.dump_json(msg).decode()

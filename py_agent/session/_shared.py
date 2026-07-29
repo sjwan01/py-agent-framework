@@ -25,10 +25,10 @@ def _infer_role(msg: ModelMessage) -> MessageRole:
     # ModelResponse is an assistant reply.
     if isinstance(msg, ModelResponse):
         return MessageRole.ASSISTANT
-    return MessageRole.UNKNOWN
+    return MessageRole.UNKNOWN  # type: ignore[unreachable]
 
 
-def _is_turn_start(msg) -> bool:
+def _is_turn_start(msg: ModelMessage) -> bool:
     """Return True if ``msg`` marks the start of a new user turn.
 
     A turn starts when the message is a ``ModelRequest`` whose first part is a

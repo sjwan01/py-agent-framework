@@ -55,7 +55,11 @@ class ContextManager:
         self._baseline_state: BaselineState | None = None
 
     async def prepare(
-        self, messages: list, *, system_prompt: str, current_state: BaselineState,
+        self,
+        messages: list[Any],
+        *,
+        system_prompt: str,
+        current_state: BaselineState,
     ) -> PreparedContext:
         # work on a copy so the caller's list is not mutated and prepare stays idempotent
         messages = list(messages)
@@ -96,7 +100,9 @@ class ContextManager:
 # Merges the former _default_estimate and _find_turn_boundary helpers.
 # Walks forward once, accumulating characters and recording each user turn start.
 
-def _estimate_and_find_boundary(messages: list, protect: int) -> tuple[int, int]:
+def _estimate_and_find_boundary(
+    messages: list[Any], protect: int
+) -> tuple[int, int]:
     """Return a rough token estimate and the truncation boundary.
 
     ``total_tokens`` is a rough estimate (total characters divided by 4).
@@ -129,15 +135,15 @@ def _estimate_and_find_boundary(messages: list, protect: int) -> tuple[int, int]
 # Truncates old tool results before the boundary while accumulating the truncated character count.
 
 def _truncate_and_estimate(
-    messages: list, boundary: int, max_chars: int
-) -> tuple[list, int]:
+    messages: list[Any], boundary: int, max_chars: int
+) -> tuple[list[Any], int]:
     """Truncate old tool results and return the updated messages plus token count.
 
     Does not mutate the original ``messages``. Only exact ``ToolReturnPart``
     instances (not subclasses) whose ``content`` is a string longer than
     ``max_chars`` are truncated.
     """
-    out: list = []
+    out: list[Any] = []
     total_chars = 0
 
     for i, msg in enumerate(messages):
@@ -150,7 +156,7 @@ def _truncate_and_estimate(
                     total_chars += len(content)
             continue
 
-        new_parts: list = []
+        new_parts: list[Any] = []
         changed = False
         for part in msg.parts:
             if (
@@ -209,7 +215,7 @@ def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
     return "\n".join(lines)
 
 
-def _inject_diff(messages: list, diff: str) -> list:
+def _inject_diff(messages: list[Any], diff: str) -> list[Any]:
     ts = datetime.now(timezone.utc)
     for i in range(len(messages) - 1, -1, -1):
         if _is_turn_start(messages[i]):

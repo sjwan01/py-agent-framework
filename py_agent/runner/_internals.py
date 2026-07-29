@@ -8,11 +8,14 @@ These functions are bound as instance methods on the ``AgentRunner`` class in
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from typing import Any
 
-from pydantic_ai.messages import ModelRequest, ModelResponse
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse
 
 
-def messages_to_persist(original_history: list, all_messages: list) -> list:
+def messages_to_persist(
+    original_history: list[Any], all_messages: list[Any]
+) -> list[Any]:
     """Compute the messages that should be persisted this turn.
 
     Pydantic AI's ``result.new_messages()`` treats messages injected by
@@ -32,7 +35,7 @@ def messages_to_persist(original_history: list, all_messages: list) -> list:
     # first pass: filter by Python object identity
     original_ids = {id(m) for m in original_history}
 
-    def _key(m) -> tuple:
+    def _key(m: Any) -> tuple[Any, ...]:
         """Build a stable content key for a message.
 
         Used when object identity differs because the message was copied.
@@ -40,7 +43,7 @@ def messages_to_persist(original_history: list, all_messages: list) -> list:
         kind = "request" if isinstance(m, ModelRequest) else (
             "response" if isinstance(m, ModelResponse) else type(m).__name__
         )
-        parts: list = []
+        parts: list[Any] = []
         for part in getattr(m, "parts", ()):
             pk = getattr(part, "part_kind", None)
             if pk == "user-prompt":
@@ -63,7 +66,10 @@ def messages_to_persist(original_history: list, all_messages: list) -> list:
 
 
 async def notify_streamers(
-    streamers: list, event: str, data: dict, pending: list
+    streamers: list[Any],
+    event: str,
+    data: dict[str, Any],
+    pending: list[Any],
 ) -> None:
     """Push runtime events to all streaming extensions.
 
@@ -84,13 +90,15 @@ async def notify_streamers(
             pass
 
 
-async def drain_pending(pending: list) -> AsyncIterator[dict]:
+async def drain_pending(
+    pending: list[Any]
+) -> AsyncIterator[dict[str, Any]]:
     """Yield and clear every chunk in ``pending`` one at a time."""
     while pending:
         yield pending.pop(0)
 
 
-def build_capabilities(self) -> list:
+def build_capabilities(self: Any) -> list[Any]:
     """Assemble the capabilities list passed to the Pydantic AI Agent.
 
     User-provided capabilities come first; framework hooks are appended by the
@@ -102,7 +110,9 @@ def build_capabilities(self) -> list:
     return capabilities
 
 
-async def fire(self, event: str, data: dict) -> dict:
+async def fire(
+    self: Any, event: str, data: dict[str, Any]
+) -> dict[str, Any]:
     """Dispatch an event to all extensions in chain mode.
 
     Chain mode means extension A receives the data, returns a modified dict,
@@ -127,8 +137,12 @@ async def fire(self, event: str, data: dict) -> dict:
 
 
 async def fire_notify(
-    self, event: str, data: dict, *, cancel_key: str = "cancel"
-) -> dict:
+    self: Any,
+    event: str,
+    data: dict[str, Any],
+    *,
+    cancel_key: str = "cancel",
+) -> dict[str, Any]:
     """Dispatch an event to all extensions in notify mode.
 
     Unlike chain mode, every extension receives the same read-only snapshot and
@@ -152,7 +166,7 @@ async def fire_notify(
     return {cancel_key: cancelled}
 
 
-async def get_tools(self) -> list:
+async def get_tools(self: Any) -> list[Any]:
     """Return the tools the Agent should use for this run.
 
     Prefers ``ToolLifecycle`` when extensions have registered tool sources;
@@ -160,5 +174,7 @@ async def get_tools(self) -> list:
     """
     lifecycle = await self._ensure_tool_lifecycle()
     if lifecycle is not None:
-        return lifecycle.get_for_scope(self._scope)
-    return self._raw_tools
+        tools: list[Any] = lifecycle.get_for_scope(self._scope)
+        return tools
+    raw_tools: list[Any] = self._raw_tools
+    return raw_tools

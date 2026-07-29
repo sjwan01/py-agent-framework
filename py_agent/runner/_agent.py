@@ -156,9 +156,13 @@ class AgentRunner:
 
         # context manager: single-turn → never; multi-turn → from config or
         # sensible defaults
+        self._context_manager: ContextManager | None = None
+        self._compaction_summarizer: HarnessSummarizer | None = None
+        self._protect_turns = 0
+
         if is_multi:
             if context_manager_config is not None:
-                self._context_manager = ContextManager(
+                context_manager = ContextManager(
                     context_window_cap=context_manager_config.context_window,
                     low_watermark_ratio=context_manager_config.low_watermark_ratio,
                     high_watermark_ratio=context_manager_config.high_watermark_ratio,
@@ -166,17 +170,14 @@ class AgentRunner:
                     truncate_chars=context_manager_config.truncate_tool_result_chars,
                 )
             else:
-                self._context_manager = ContextManager()
-            self._protect_turns = self._context_manager._protect
-        else:
-            self._context_manager = None
-            self._protect_turns = 0
+                context_manager = ContextManager()
+            self._context_manager = context_manager
+            self._protect_turns = context_manager._protect
 
-        # summarizer: single-turn → never; multi-turn → from config or defaults
-        if is_multi:
             if summarizer_config is not None:
-                context_window = self._context_manager._context_window_cap
-                default_max = int(min(32_768, max(context_window * 0.1, 8_192)))
+                default_max = int(
+                    min(32_768, max(context_manager._context_window_cap * 0.1, 8_192))
+                )
                 self._compaction_summarizer = HarnessSummarizer(
                     model=summarizer_config.model or model,
                     max_output_tokens=summarizer_config.max_output_tokens
@@ -185,8 +186,6 @@ class AgentRunner:
                 )
             else:
                 self._compaction_summarizer = HarnessSummarizer(model=model)
-        else:
-            self._compaction_summarizer = None
 
         if max_tool_calls_per_turn <= 0:
             raise ValueError(
@@ -199,12 +198,13 @@ class AgentRunner:
         self._capabilities = capabilities or []
 
         self._on_warning = on_warning or _noop
+        self._compaction_pending: set[str] = set()
 
     # Shared helpers for run() and run_stream()
 
     async def _setup_run(
         self, prompt: str, session_id: str | None
-    ) -> tuple[str, list, list, bool]:
+    ) -> tuple[str, list[Any], list[Any], bool]:
         """Shared pre-run setup for ``run()`` / ``run_stream()``.
 
         Returns:
@@ -321,14 +321,14 @@ class AgentRunner:
     async def _finalize_run(
         self,
         session_id: str,
-        original_history: list,
-        result,
+        original_history: list[Any],
+        result: Any,
         output: str,
         needs_compaction: bool,
         *,
         streamers: list[Any] | None = None,
         pending: list[Any] | None = None,
-    ) -> AsyncIterator[dict]:
+    ) -> AsyncIterator[dict[str, Any]]:
         """Shared post-run cleanup for ``run()`` / ``run_stream()``.
 
         After the Agent finishes, this:
@@ -373,9 +373,11 @@ class AgentRunner:
                 "session_id": session_id,
             })
             cancelled = comp_result.get("cancel", False)
-            if not cancelled:
+            if not cancelled and session_id not in self._compaction_pending:
+                self._compaction_pending.add(session_id)
                 # trigger in the background so the current turn's response is not blocked
                 asyncio.create_task(self._trigger_compaction(session_id))
+
             # notify extensions of the compaction outcome (cancelled or triggered)
             applied_payload = {"session_id": session_id, "cancelled": bool(cancelled)}
             await self._fire(AgentRunnerEvent.COMPACTION_APPLIED, applied_payload)
@@ -453,7 +455,7 @@ class AgentRunner:
 
     async def run_stream(
         self, prompt: str, *, session_id: str | None = None
-    ) -> AsyncIterator[dict]:
+    ) -> AsyncIterator[dict[str, Any]]:
         """Run one conversation turn and yield events one by one.
 
         Differences from ``run()``:
@@ -469,7 +471,7 @@ class AgentRunner:
 
         # 2. build agent — pass streamers to enable streaming event push
         streamers = list(self._extensions)
-        pending: list[dict] = []
+        pending: list[dict[str, Any]] = []
         agent = await self._build_agent(
             session_id, pending=pending, streamers=streamers
         )
