@@ -16,7 +16,7 @@ from py_agent.models import BaselineState, ContextConfig, PreparedContext
 from py_agent.session._shared import _is_turn_start
 
 
-async def prepare(
+async def _prepare_context(
     messages: list[Any],
     *,
     frozen_baseline: BaselineState | None,
