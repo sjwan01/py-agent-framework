@@ -1,9 +1,8 @@
 """Single-turn, non-persistent session implementation."""
 from __future__ import annotations
 
-from uuid import uuid4
-
 from typing import Any
+from uuid import uuid4
 
 from py_agent.types import SessionManager
 

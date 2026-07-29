@@ -11,7 +11,6 @@ from typing import Any
 from py_agent.tools import LocalToolSource, ToolLifecycle
 from py_agent.types import ToolLifecycleEvent
 
-
 # Lazy tool lifecycle initialization (called on the first run).
 
 async def ensure_tool_lifecycle(self: Any) -> Any:

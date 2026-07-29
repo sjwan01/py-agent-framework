@@ -24,20 +24,19 @@ from pydantic_ai import Agent
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 
+from py_agent._compaction import HarnessSummarizer
+from py_agent.context import BaselineState, ContextManager
 from py_agent.models import (
     ContextManagerConfig,
     RunResult,
     SummarizerConfig,
 )
-from py_agent._compaction import HarnessSummarizer
-from py_agent.context import BaselineState, ContextManager
+from py_agent.runner import _factory, _hooks, _internals
 from py_agent.session import SingleTurnSessionManager
 from py_agent.types import (
-    SessionManager,
     AgentRunnerEvent,
+    SessionManager,
 )
-
-from py_agent.runner import _factory, _hooks, _internals
 
 # Pydantic AI thinking depth levels. Invalid values are ignored and fall back.
 _VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}

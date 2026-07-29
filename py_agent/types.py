@@ -5,10 +5,9 @@ Zero implementation. Pure interface definitions.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Awaitable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import StrEnum
 from typing import Any, Protocol
-
 
 # SessionManager (external seam)
 

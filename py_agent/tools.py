@@ -8,9 +8,9 @@ from typing import Any
 from pydantic_ai import Tool as PydanticTool
 
 from py_agent.types import (
+    ToolEventHandler,
     ToolLifecycleEvent,
     ToolSource,
-    ToolEventHandler,
 )
 
 
@@ -159,7 +159,15 @@ class ToolLifecycle:
         self.on(ToolLifecycleEvent.TOOL_CONFLICT, self._default_conflict_handler)
 
     def on(self, event: str, handler: ToolEventHandler) -> None:
-        """Subscribe a handler to a tool lifecycle event."""
+        """Subscribe a handler to a tool lifecycle event.
+
+        Args:
+            event: Lifecycle event name to listen for, such as
+                ``ToolLifecycleEvent.TOOL_CONFLICT``.
+            handler: Async callable invoked when the event fires. Receives the
+                event name and the current event data, and may return a dict
+                of updates to merge back into the data.
+        """
         self._handlers.setdefault(event, []).append(handler)
 
     @staticmethod

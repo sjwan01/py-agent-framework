@@ -13,7 +13,6 @@ from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from py_agent.types import SessionManager
 
-
 # PostgreSQL schema
 # sessions: one row per session, metadata stored as JSONB.
 # messages: one row per message.

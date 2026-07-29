@@ -1,7 +1,7 @@
 """Session adapters — one ABC + three concrete implementations."""
-from py_agent.session._single_turn import SingleTurnSessionManager
 from py_agent.session._local import LocalSessionManager
 from py_agent.session._postgres import PostgresSessionManager
+from py_agent.session._single_turn import SingleTurnSessionManager
 from py_agent.types import SessionManager  # re-export for convenience
 
 __all__ = [
