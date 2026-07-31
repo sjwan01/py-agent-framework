@@ -343,3 +343,38 @@ underlying SDK:
 | `ToolLifecycle` | Managed internally by `AgentRunner`; users interact via `ToolSource` and events |
 | `HarnessSummarizer` | Compaction implementation detail; configured through `SummarizerConfig` |
 | `ContextManagerConfig` | Removed. `ContextConfig` is the sole context-management config model. Users pass `ContextConfig` directly. |
+
+---
+
+## Spotted Pitfalls (Future Work)
+
+Known issues that are documented here instead of being fixed in this pass.
+Each entry describes the trigger, the consequence, and the intended fix so a
+later pass can pick it up without re-deriving the context.
+
+### P1. Compaction deduplication is per-instance, not per-session
+
+**Trigger.** Two `AgentRunner` instances (or two processes) sharing the same
+database serve the same `session_id` concurrently, and both cross the high
+watermark in the same turn. The in-flight deduplication set
+(`_compaction_pending` in `AgentRunner.__init__`) is an instance attribute,
+so each instance independently launches a background compaction for the
+session.
+
+**Consequence.**
+
+- The LLM summarizer runs twice for the same boundary — double token cost.
+- The `compactions` table receives two rows for the same boundary — duplicate
+  data, though `load_history` picks the latest eligible row, so correctness is
+  unaffected.
+
+**Scope.** Single-instance behavior is correct: within one runner, at most one
+compaction per session runs at any time. The gap only appears with multiple
+instances sharing a session, which is an uncommon deployment pattern (sessions
+are usually pinned to one worker).
+
+**Intended fix.** Database-level protection, e.g. an advisory lock or
+`INSERT ... ON CONFLICT DO NOTHING` on `(session_id, boundary_seq)` in
+`apply_compaction`. Note that write-side idempotency alone cannot prevent the
+duplicate `summarize` call — the expensive step happens before the write — so
+a full fix requires reserving the boundary before summarization.
