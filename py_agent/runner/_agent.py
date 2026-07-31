@@ -364,7 +364,8 @@ class AgentRunner:
         After the Agent finishes, this:
 
         1. Fires ``AFTER_AGENT_RUN`` and ``AGENT_END``.
-        2. Saves the turn's delta messages to the DB.
+        2. Fires ``SESSION_SAVE`` (extensions may rewrite the delta) and saves
+           the turn's delta messages to the DB.
         3. Triggers compaction if needed and not cancelled.
         4. Fires ``SESSION_END``.
         5. Yields ``run_end`` (``{"type": "run_end", ...}``).
@@ -388,10 +389,12 @@ class AgentRunner:
         async for chunk in self._drain_pending(pending):
             yield chunk
 
-        # Save messages
+        # SESSION_SAVE event: extensions may rewrite the delta before it is persisted.
+        save_data = {"session_id": session_id, "delta_messages": delta_messages}
+        save_payload = await self._fire(AgentRunnerEvent.SESSION_SAVE, save_data)
+        if "delta_messages" in save_payload:
+            delta_messages = save_payload["delta_messages"]
         await self._session_manager.save_messages(session_id, delta_messages)
-        save_payload = {"session_id": session_id, "delta_messages": delta_messages}
-        await self._fire(AgentRunnerEvent.SESSION_SAVE, save_payload)
         await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_SAVE, save_payload, pending)
         async for chunk in self._drain_pending(pending):
             yield chunk
