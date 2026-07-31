@@ -31,7 +31,7 @@ class ContextConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_ratios(self) -> ContextConfig:
-        """Ensure watermark ratios satisfy 0 < low < high < 1."""
+        """Validate watermark ratios, cap, truncation, and turn protection."""
         low = self.low_watermark_ratio
         high = self.high_watermark_ratio
         if not (0 < low < high < 1):
@@ -42,6 +42,14 @@ class ContextConfig(BaseModel):
         if self.protect_turns < 0:
             raise ValueError(
                 f"protect_turns must be >= 0, got {self.protect_turns}"
+            )
+        if self.context_window_cap <= 0:
+            raise ValueError(
+                f"context_window_cap must be > 0, got {self.context_window_cap}"
+            )
+        if self.truncate_chars <= 0:
+            raise ValueError(
+                f"truncate_chars must be > 0, got {self.truncate_chars}"
             )
         return self
 
