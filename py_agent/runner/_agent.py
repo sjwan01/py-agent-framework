@@ -45,10 +45,13 @@ _VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high", "xhigh"}
 class AgentRunner:
     """Orchestrator that manages the full agent lifecycle.
 
-    Only ``model`` is required. Multi-turn sessions auto-configure context
-    management and compaction. The minimal single-turn use case is a one-liner::
+    Only ``model`` and a ``system_prompt`` are required. Multi-turn sessions
+    auto-configure context management and compaction. The minimal usage::
 
-        runner = AgentRunner(model=my_model)
+        runner = AgentRunner(model=my_model, system_prompt="You are...")
+
+    A system prompt is always required: pass it explicitly, or omit it only
+    when reconnecting to an existing session that already has a stored prompt.
 
     Two entry points:
     - ``run(prompt)`` — execute one turn, return ``RunResult``.
@@ -57,8 +60,8 @@ class AgentRunner:
     Args:
         model: Pydantic AI model used for the agent's main conversation loop.
         system_prompt: Instructions injected at the start of every turn.
-            ``None`` means "use the stored baseline prompt" when reconnecting
-            to an existing session; it is an error if no baseline exists.
+            ``None`` means "use the stored system prompt" when reconnecting
+            to an existing session; it is an error if no prompt is stored.
             Empty strings are also rejected.
         thinking_enabled: Enable Pydantic AI thinking mode for the main model.
             Defaults to ``True``.
@@ -155,6 +158,9 @@ class AgentRunner:
         self._session_manager = session_manager or SingleTurnSessionManager()
         is_multi = not isinstance(self._session_manager, SingleTurnSessionManager)
 
+        # resolve on_warning early so the single-turn config warning can use it
+        self._on_warning = on_warning or _noop
+
         # context config: single-turn → never; multi-turn → from config or
         # sensible defaults
         self._context_config: ContextConfig | None = None
@@ -177,6 +183,16 @@ class AgentRunner:
                 )
             else:
                 self._compaction_summarizer = HarnessSummarizer(model=model)
+        elif context_config is not None or summarizer_config is not None:
+            # Explicit config on a single-turn runner is silently dropped;
+            # tell the user so the loss is not invisible.
+            self._on_warning(
+                "context_config and summarizer_config are ignored for "
+                "single-turn sessions; pass a persistent SessionManager "
+                "(LocalSessionManager / PostgresSessionManager) to enable "
+                "context management",
+                None,
+            )
 
         if max_tool_calls_per_turn <= 0:
             raise ValueError(
@@ -188,7 +204,6 @@ class AgentRunner:
         self._hooks = hooks
         self._capabilities = capabilities or []
 
-        self._on_warning = on_warning or _noop
         self._compaction_pending: set[str] = set()
 
     # Shared helpers for run() and run_stream()
@@ -205,8 +220,8 @@ class AgentRunner:
             - original_history: history after context preparation, before extension injection
                 (used to compute the turn delta)
             - needs_compaction: whether context preparation flagged compaction as needed
-            - active_sp: the system prompt to use for this turn (user-provided or
-                loaded from session storage)
+            - active_sp: the system prompt to use for this turn (user-provided
+                or loaded from session storage)
         """
         # step 1: create or reuse session
         if session_id is None:
@@ -235,8 +250,9 @@ class AgentRunner:
             if active_sp is None:
                 active_sp = frozen_sp
 
-        # Reject empty/blank system prompts whether they came from the caller or
-        # session storage. A prompt with meaningful content is required.
+        # A system prompt is always required: provided by the caller, or loaded
+        # from the stored session prompt when reconnecting. Single-turn sessions
+        # have no stored prompt, so the caller must always provide one.
         active_sp = (active_sp or "").strip()
         if not active_sp:
             raise ValueError(
@@ -253,7 +269,6 @@ class AgentRunner:
                     session_id, system_prompt=active_sp
                 )
 
-        if self._context_config is not None:
             try:
                 history, needs_compaction = await _prepare_context(
                     history,
@@ -337,9 +352,9 @@ class AgentRunner:
         # per turn and manage history/load_history ourselves, so we do not want
         # Pydantic AI to persist a SystemPromptPart that could shadow a later
         # system-prompt change.
-        # `active_sp` is resolved in _setup_run. It is guaranteed non-empty for
-        # multi-turn runs (a baseline or user prompt must exist). For single-turn
-        # runs it is simply the user-provided prompt, which may be empty.
+        # `active_sp` is resolved in _setup_run and is always non-empty: the
+        # caller must provide a system prompt, or the stored one is reused
+        # when reconnecting to an existing session.
         return Agent(
             model=self._model,
             instructions=active_sp,
