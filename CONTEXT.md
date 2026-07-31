@@ -286,6 +286,26 @@ monkey-patch internals. The API is split across four import paths by semantic co
 | `ContextConfig` | BaseModel | Configure watermark thresholds, protect_turns, truncation. Frozen after construction. Pass to `AgentRunner(context_config=...)`. |
 | `SummarizerConfig` | BaseModel | Configure the LLM summarizer (model, token budget, custom prompt). Pass to `AgentRunner(summarizer_config=...)`. |
 
+### `AgentRunner` — required prompt & integration config
+
+**`system_prompt` is always required.** Every run needs a non-empty system
+prompt: pass it explicitly, or omit it only when reconnecting to an existing
+session that already has a stored prompt (loaded from the `system_prompts`
+table). Single-turn sessions have no stored prompt, so the caller must always
+provide one. Empty strings are rejected.
+
+The remaining constructor parameters are thin pass-throughs that mirror
+Pydantic AI capabilities, kept so the framework never blocks access to the
+underlying SDK:
+
+| Parameter | Effect | Kind |
+|-----------|--------|------|
+| `thinking_enabled`, `thinking_level` | Enable Pydantic AI thinking mode (`ModelSettings["thinking"]`) | SDK pass-through |
+| `parallel_tool_calls` | Allow concurrent tool calls (`ModelSettings["parallel_tool_calls"]`) | SDK pass-through |
+| `hooks` | Append a Pydantic AI `Hooks` instance to capabilities | SDK pass-through |
+| `capabilities` | Append extra Pydantic AI capabilities | SDK pass-through |
+| `max_tool_calls_per_turn` | Hard cap on tool invocations per turn, enforced in the tool loop | Framework logic |
+
 ### `py_agent.session` — persistence backends and related types
 
 | Name | Kind | Why the user needs it |
