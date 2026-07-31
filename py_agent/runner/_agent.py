@@ -456,11 +456,8 @@ class AgentRunner:
 
         This is the most common entry point. Internal flow:
 
-           _setup_run → _build_agent → agent.run_stream (consume text internally)
+           _setup_run → _build_agent → agent.run (direct result)
            → _finalize_run → extract run_end → return RunResult
-
-        Streaming consumption here is an implementation detail — callers do not need to
-        know that ``stream_text()`` is used underneath.
         """
         # 1. setup (load history, context handling, extension injection)
         session_id, history, original_history, needs_compaction, active_sp = await self._setup_run(
@@ -469,13 +466,9 @@ class AgentRunner:
         # 2. build agent
         agent = await self._build_agent(session_id, active_sp=active_sp)
 
-        # 3. run agent (always uses run_stream; tokens are concatenated into full text internally)
-        output_parts: list[str] = []
-        async with agent.run_stream(prompt, message_history=history) as result:
-            async for text in result.stream_text(delta=False):
-                output_parts.append(text)
-
-        output = "".join(output_parts)
+        # 3. run agent (non-streaming — read the output directly from the result)
+        result = await agent.run(prompt, message_history=history)
+        output = result.output
 
         # 4. finalize (save, compaction, events)
         async for event in self._finalize_run(
@@ -515,10 +508,13 @@ class AgentRunner:
             session_id, active_sp=active_sp, pending=pending, streamers=streamers
         )
 
-        # 3. run agent — notify + drain for every token chunk
+        # 3. run agent — notify + drain for every token chunk.
+        # delta=True yields incremental chunks; concatenating them rebuilds the
+        # full text exactly once. (delta=False yields accumulated prefixes and
+        # would duplicate the output on join.)
         output_parts: list[str] = []
         async with agent.run_stream(prompt, message_history=history) as result:
-            async for text in result.stream_text(delta=False):
+            async for text in result.stream_text(delta=True):
                 output_parts.append(text)
                 # TOKEN_STREAM event: fire for legacy extensions and
                 # notify_streamers (streaming extension yields go into pending)
