@@ -40,7 +40,8 @@ async def _prepare_context(
     )
 
     if total_tokens <= low_mark:
-        return messages, total_tokens > high_mark
+        # Below the low watermark: nothing to truncate, no compaction needed.
+        return messages, False
 
     messages, tokens_after = _truncate_and_estimate(
         messages, boundary, config.truncate_chars
