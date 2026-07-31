@@ -9,8 +9,6 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from enum import StrEnum
 from typing import Any, Protocol
 
-from py_agent.models import BaselineState
-
 # SessionManager (external seam)
 
 class SessionManager(ABC):
@@ -23,8 +21,8 @@ class SessionManager(ABC):
         apply_compaction: Store a compaction summary at the given ``boundary_seq``.
         get_max_message_seq: Return the highest message sequence number, or ``-1`` if empty.
         ensure_session: Create the session row if it does not already exist.
-        save_baseline: Persist the current system prompt and baseline state for a session.
-        load_latest_baseline: Load the most recently saved baseline, if any.
+        save_system_prompt: Persist the current system prompt for a session.
+        load_system_prompt: Load the most recently saved system prompt, if any.
     """
 
     @abstractmethod
@@ -50,13 +48,13 @@ class SessionManager(ABC):
         self, session_id: str, *, metadata: dict[str, Any] | None = None
     ) -> str: ...
     @abstractmethod
-    async def save_baseline(
-        self, session_id: str, system_prompt: str, state: BaselineState
+    async def save_system_prompt(
+        self, session_id: str, system_prompt: str
     ) -> None: ...
     @abstractmethod
-    async def load_latest_baseline(
+    async def load_system_prompt(
         self, session_id: str
-    ) -> tuple[str, BaselineState] | None: ...
+    ) -> str | None: ...
 
 
 # Extension Protocol

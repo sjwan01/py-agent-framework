@@ -6,6 +6,17 @@ Python agent framework built on [Pydantic AI](https://ai.pydantic.dev/).
 Orchestrates multi-turn conversations with context-window management,
 tool registration, and session persistence (SQLite / PostgreSQL / single-turn).
 
+## Spec-Driven Minimal Implementation
+
+Implement the smallest solution that fully satisfies the functional requirements
+documented in `CONTEXT.md` or the relevant spec. Robustness and completeness of
+the required behavior are not optional: handle errors, validate inputs, and cover
+the normal path, error path, boundaries, and integration with tests.
+
+Do not add speculative features, extra abstraction layers, or optimizations that
+are not required by the spec. If a requirement is unclear, ask for clarification
+instead of building a more general solution.
+
 ## Build & Verify
 
 ```bash

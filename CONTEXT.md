@@ -25,7 +25,7 @@ principles:
 | Pillar | Responsibility |
 |--------|---------------|
 | Context persistence | Session-level message storage across three backends, each with a distinct purpose (see below) |
-| Context management | Watermark-based truncation + LLM summarization, designed to minimize cache-miss frequency |
+| Context management | Watermark-based truncation + LLM summarization, designed to keep long conversations within the context window |
 | Extension system | A Protocol-defined set of hooks spanning the full agent and tool lifecycle; the sole mechanism for injecting capabilities |
 
 ---
@@ -45,13 +45,15 @@ agent lifecycle:
 
 ### Overarching Goal
 
-**Maximize LLM API cache-hit rate while preserving long-conversation quality.**
+**Keep long conversations within the context window while preserving recent context.**
 
-LLM APIs key their cache on a byte-level hash of the full message list — including the
-*effective* prompt that Pydantic AI assembles from the user's instructions plus tool
-names/descriptions, skills, and context files. Any perturbation to this assembled prompt
-causes a full cache miss. Every design decision in context management starts from the
-question: "does this operation change the effective prompt?" 
+Context management is not a cache-optimization layer. The framework cannot control or
+verify provider-side cache-key computation. Instead, it focuses on two concrete,
+observable goals:
+
+1. Avoid exceeding the configured context-window cap by truncating old tool results.
+2. When truncation alone is no longer enough, replace the distant past with a compact
+   LLM-generated summary so the model still has coarse-grained history.
 
 ### Dual Watermarks
 
@@ -59,22 +61,22 @@ Context-window management operates at two thresholds with asymmetric costs:
 
 | Threshold | Trigger | Action | Cache impact |
 |-----------|---------|--------|--------------|
-| Low watermark | token count > context_window × low_ratio | Truncate old tool results outside the protected turn region | **None** — only content strings are shortened |
-| High watermark | token count > context_window × high_ratio | Flag for asynchronous LLM compaction | **Full miss** — message-list structure is replaced by a summary |
+| Low watermark | token count > context_window × low_ratio | Truncate old tool results outside the protected turn region | Cheap — only shortens content strings |
+| High watermark | token count > context_window × high_ratio | Flag for asynchronous LLM compaction | Expensive — restructures message-list history |
 
 Design intent:
 
 ```
 token count growth →→→
   Below low watermark:     do nothing
-  Low ↔ High watermark:    truncate old tool results (space reclaimed, zero cache cost)
-  Above high watermark:    trigger compaction (cache miss, deferred to the last possible moment)
+  Low ↔ High watermark:    truncate old tool results (space reclaimed, minimal disruption)
+  Above high watermark:    trigger compaction (history replaced by summary, deferred)
 ```
 
 - A single-watermark design triggers compaction as soon as a threshold is crossed →
-  frequent cache misses.
-- Dual watermarks buy extra headroom between low and high via truncation alone (cost-free),
-  pushing the inevitable compaction as far out as possible.
+  frequent, expensive summarization.
+- Dual watermarks buy extra headroom between low and high via truncation alone,
+  pushing compaction as far out as possible.
 
 ### Protecting the Last N Turns
 
@@ -96,58 +98,14 @@ covers the distant past; the last N turns remain as verbatim messages.
 Both mechanisms share the same `protect_turns` value, keeping the protection boundary
 consistent: what gets truncated and what gets summarized use the same cutoff.
 
-### Baseline Mechanism: Stabilizing the Effective Prompt for Cache Hits
-
-Two distinct concepts of "system prompt" are at play:
-
-- **User system prompt** — the `system_prompt` string passed to `AgentRunner`. This is the
-  developer's instructions: personality, task description, behavioral rules. Typically
-  stable across turns.
-- **Effective prompt** — what the model actually receives. Pydantic AI assembles this from
-  the user's system prompt **plus** the list of available tools, their names and
-  descriptions, registered skills, and context files. This is what the LLM API hashes for
-  its cache key.
-
-The core tension: tools, skills, and context files may change over time. If every
-addition of a tool updated the effective prompt, every request would be a cache miss.
-But the model must still be informed of new capabilities.
-
-Solution: **frozen baseline + transient diff injection**.
-
-- Each session stores a baseline pair `(user_system_prompt, BaselineState)`. The
-  `BaselineState` is a structured snapshot of tools, skills, and context at baseline time —
-  kept separate from the user system prompt, not baked into a single opaque blob.
-- On every turn, the current live configuration is diffed against `BaselineState`:
-  - **Diff exists** → inject a transient message informing the model. The effective prompt
-    stays byte-for-byte identical → cache hit.
-  - **No diff** → nothing is injected.
-- When the user system prompt actually changes (developer modified their instructions),
-  **the baseline is silently refreshed without injecting a diff**. The prompt already
-  changed — cache miss is unavoidable — so there is no reason to also notify the model
-  that it changed.
-
-Three baseline-write triggers, unified by the rule "only refresh when a cache miss is already inevitable":
-
-| Trigger | Action | Rationale |
-|---------|--------|-----------|
-| First access, no baseline exists | Freeze current `(user_sp, state)` | First request has no cache to hit; writing the baseline is free |
-| User system prompt changed | Silently update baseline, no diff injected | Prompt change already causes cache miss; diff would be redundant noise |
-| Compaction completed | Refresh baseline if state drifted | Compaction already caused a cache miss by restructuring history; absorb accumulated state changes while we're here |
-
-Tool changes during normal turns do **not** refresh the baseline — only a transient diff
-message is injected. The baseline catches up on the next compaction.
-
----
-
 ## Core Design: Context Persistence
 
 ### Data Model
 
 - `messages` table: one row per message, `message_seq` monotonically increasing
 - `compactions` table: one row per compaction, `(boundary_seq, summary_text)`. `boundary` records which `message_seq` the summary covers up to.
-- `baselines` table: one row per baseline snapshot, `(user_system_prompt, BaselineState JSON)`. Ordered by write time; the latest row is the current baseline. 
-
-`user_system_prompt` is the developer-supplied instructions, **not** the full effective prompt seen by the model.
+- `system_prompts` table: one row per system prompt write, ordered by write time. The
+  latest row is used to reconnect to a session without re-supplying the prompt.
 
 All three tables are scoped by `session_id`.
 
@@ -174,10 +132,10 @@ means at read time.
 
 At the end of each turn, `original_history` (after context prepare, before extension
 injection) is compared against `all_messages` (after the Agent finishes). Only the
-newly produced messages — the delta — are written to the `messages` table.
-
-Transient diff messages are injected before `original_history` is captured, so they fall
-outside the delta and are never persisted.
+newly produced messages — the delta — are written to the `messages` table. Because
+extension-injected messages happen after `original_history` is captured, they are
+included in the delta and persisted; messages produced by Pydantic AI during the run
+(such as SystemPromptPart) are excluded from the delta and are not persisted.
 
 ---
 
@@ -193,16 +151,16 @@ them — session A's data contaminating session B's requests.
 
 All session-scoped state lives in the database, addressed by `session_id`:
 
-- Baselines live in the `baselines` table → `load_latest_baseline(session_id)` reads only
+- System prompts live in the `system_prompts` table → `load_system_prompt(session_id)` reads only
   that session's row
 - Compaction records live in the `compactions` table → `load_history` queries only that
   session's boundaries
-- `prepare()` is a pure function accepting `(messages, frozen_baseline, current_state, config)`
-  and returning `PreparedContext`. It holds no state between invocations.
+- `_prepare_context()` is a pure function accepting `(messages, config)` and returning
+  `PreparedContext`. It holds no state between invocations.
 
-There is no concept of a "current session" — every `_setup_run` loads the baseline fresh
-from the database for the given session, with no dependence on memory retained from the
-previous run.
+There is no concept of a "current session" — every `_setup_run` loads the stored system
+prompt fresh from the database for the given session, with no dependence on memory
+retained from the previous run.
 
 ---
 
@@ -270,7 +228,7 @@ Extensions can observe and modify the message list before it enters the model:
 | Event | Access | Purpose |
 |-------|--------|---------|
 | `SESSION_START` | Read | Session was created or reused |
-| `CONTEXT_PREPARE` | Read-only | Context preparation is complete (truncation applied, diff injected). Extensions see the prepared state but cannot modify it here — use the next event for that. |
+| `CONTEXT_PREPARE` | Read-only | Context preparation is complete (truncation applied). Extensions see the prepared state but cannot modify it here — use the next event for that. |
 | `BEFORE_AGENT_RUN` | **Writable** | The only point where extensions can inject or modify messages before they enter the model. Changes here are persisted. |
 | `AGENT_START` | Read | The final prompt and messages are locked; the model is about to be called |
 
@@ -307,9 +265,9 @@ persistence and compaction:
 ### Relationship with Context Management
 
 Messages injected by extensions through `BEFORE_AGENT_RUN` are **persisted** — they fall
-within the delta computation window. Transient diff messages are injected earlier in the
-pipeline, before `original_history` is captured, so they are **never persisted**. The
-boundary between these two injection points is intentional.
+within the delta computation window. The `original_history` snapshot is captured after
+context preparation but before `BEFORE_AGENT_RUN`, so only extension-injected messages
+are persisted. The boundary between these two stages is intentional.
 
 ---
 
@@ -336,7 +294,7 @@ monkey-patch internals. The API is split across four import paths by semantic co
 | `SingleTurnSessionManager` | Class | Default backend; also a reference for implementing `SessionManager` |
 | `LocalSessionManager` | Class | SQLite backend for local development |
 | `PostgresSessionManager` | Class | PostgreSQL backend for production |
-| `BaselineState` | BaseModel | Parameter type for `SessionManager.save_baseline(state=...)` |
+
 | `MessageRole` | StrEnum | Type for the `role` column in custom `SessionManager` implementations |
 
 ### `py_agent.tools` — tool source implementations

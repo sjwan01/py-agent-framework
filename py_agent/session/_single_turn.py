@@ -4,7 +4,6 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
-from py_agent.models import BaselineState
 from py_agent.types import SessionManager
 
 
@@ -47,16 +46,16 @@ class SingleTurnSessionManager(SessionManager):
     async def get_max_message_seq(self, session_id: str) -> int:
         return -1
 
-    async def save_baseline(
-        self, session_id: str, system_prompt: str, state: BaselineState
+    async def save_system_prompt(
+        self, session_id: str, system_prompt: str
     ) -> None:
-        """Persist a baseline (no-op: single-turn mode does not store state)."""
-        # single-turn mode does not persist baselines
+        """Persist a system prompt (no-op: single-turn mode does not store)."""
+        # single-turn mode does not persist system prompts
         pass
 
-    async def load_latest_baseline(
+    async def load_system_prompt(
         self, session_id: str
-    ) -> tuple[str, BaselineState] | None:
-        """Load the latest baseline (always None for single-turn mode)."""
-        # single-turn mode has no baseline history
+    ) -> str | None:
+        """Load the stored system prompt (always None for single-turn mode)."""
+        # single-turn mode has no system prompt history
         return None

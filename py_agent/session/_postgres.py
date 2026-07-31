@@ -10,7 +10,6 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 
-from py_agent.models import BaselineState
 from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from py_agent.types import SessionManager
 
@@ -21,6 +20,7 @@ from py_agent.types import SessionManager
 #   - content uses JSONB; psycopg converts between Python dict and JSONB.
 #   - indexed by (session_id, message_seq).
 # compactions: one row per compaction, with boundary_seq marking the summarized range.
+# system_prompts: one row per system prompt write.
 PG_SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -50,16 +50,15 @@ CREATE TABLE IF NOT EXISTS compactions (
 CREATE INDEX IF NOT EXISTS idx_compactions_session_boundary_pg
     ON compactions(session_id, boundary_seq);
 
-CREATE TABLE IF NOT EXISTS baselines (
+CREATE TABLE IF NOT EXISTS system_prompts (
     id SERIAL PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     system_prompt TEXT NOT NULL,
-    state JSONB NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_baselines_session_pg
-    ON baselines(session_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_system_prompts_session_pg
+    ON system_prompts (session_id, id DESC);
 """
 
 
@@ -293,35 +292,32 @@ class PostgresSessionManager(SessionManager):
                 (session_id, boundary_seq, summary),
             )
 
-    async def save_baseline(
-        self, session_id: str, system_prompt: str, state: BaselineState
+    async def save_system_prompt(
+        self, session_id: str, system_prompt: str
     ) -> None:
-        """Persist a (system_prompt, state) pair for the session."""
+        """Persist the system prompt for the session."""
         pool = await self._get_pool()
         async with pool.connection() as conn:
             await conn.execute(
-                "INSERT INTO baselines (session_id, system_prompt, state) VALUES (%s, %s, %s)",
-                (session_id, system_prompt, state.model_dump_json()),
+                "INSERT INTO system_prompts (session_id, system_prompt) VALUES (%s, %s)",
+                (session_id, system_prompt),
             )
 
-    async def load_latest_baseline(
+    async def load_system_prompt(
         self, session_id: str
-    ) -> tuple[str, BaselineState] | None:
-        """Load the most recent baseline for the session, if any."""
+    ) -> str | None:
+        """Load the most recent system prompt for the session, if any."""
         pool = await self._get_pool()
         async with pool.connection() as conn:
             cursor = await conn.execute(
-                "SELECT system_prompt, state FROM baselines "
+                "SELECT system_prompt FROM system_prompts "
                 "WHERE session_id = %s ORDER BY id DESC LIMIT 1",
                 (session_id,),
             )
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return (
-                row[0],
-                _deserialize_baseline_state(row[1]),
-            )
+            return cast(str, row[0])
 
     async def close(self) -> None:
         """Close the connection pool and release all connections."""
@@ -333,12 +329,6 @@ class PostgresSessionManager(SessionManager):
 # JSONB deserialization helpers
 # psycopg may return a Python dict for JSONB columns (when auto-deserialization is enabled)
 # or a raw JSON string (depending on configuration). These helpers handle both cases.
-
-def _deserialize_baseline_state(data: Any) -> BaselineState:
-    """Deserialize a JSONB baseline state (dict or string) into a model."""
-    if isinstance(data, dict):
-        return BaselineState.model_validate(data)
-    return BaselineState.model_validate_json(data)
 
 
 def _deserialize_pg_message(data: Any) -> ModelMessage:

@@ -7,14 +7,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai.models import Model
 
 
-class BaselineState(BaseModel):
-    """Snapshot of skills, tools, and context at baseline time for diff injection."""
-
-    skills: dict[str, str] = Field(default_factory=dict)
-    tools: dict[str, str] = Field(default_factory=dict)
-    context: list[str] = Field(default_factory=list)
-
-
 class PreparedContext(BaseModel):
     """Output of ``py_agent._context._prepare_context()``.
 

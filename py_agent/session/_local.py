@@ -11,7 +11,6 @@ from uuid import uuid4
 import aiosqlite
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
-from py_agent.models import BaselineState
 from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
 from py_agent.types import SessionManager
 
@@ -23,6 +22,7 @@ from py_agent.types import SessionManager
 #   - role: message role (user / assistant / tool).
 #   - content: JSON string serialized by _MessageAdapter.
 # compactions: one row per compaction, with boundary_seq marking the summarized range.
+# system_prompts: one row per system prompt write, ordered by id DESC for latest retrieval.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -52,16 +52,15 @@ CREATE TABLE IF NOT EXISTS compactions (
 CREATE INDEX IF NOT EXISTS idx_compactions_session_boundary
     ON compactions(session_id, boundary_seq);
 
-CREATE TABLE IF NOT EXISTS baselines (
+CREATE TABLE IF NOT EXISTS system_prompts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
     system_prompt TEXT NOT NULL,
-    state TEXT NOT NULL,
     created_at TEXT DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_baselines_session
-    ON baselines(session_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_system_prompts_session
+    ON system_prompts (session_id, id DESC);
 """
 
 
@@ -275,31 +274,28 @@ class LocalSessionManager(SessionManager):
             )
             await db.commit()
 
-    async def save_baseline(
-        self, session_id: str, system_prompt: str, state: BaselineState
+    async def save_system_prompt(
+        self, session_id: str, system_prompt: str
     ) -> None:
-        """Persist a (system_prompt, state) pair for the session."""
+        """Persist the system prompt for the session."""
         async with self._connect() as db:
             await db.execute(
-                "INSERT INTO baselines (session_id, system_prompt, state) VALUES (?, ?, ?)",
-                (session_id, system_prompt, state.model_dump_json()),
+                "INSERT INTO system_prompts (session_id, system_prompt) VALUES (?, ?)",
+                (session_id, system_prompt),
             )
             await db.commit()
 
-    async def load_latest_baseline(
+    async def load_system_prompt(
         self, session_id: str
-    ) -> tuple[str, BaselineState] | None:
-        """Load the most recent baseline for the session, if any."""
+    ) -> str | None:
+        """Load the most recent system prompt for the session, if any."""
         async with self._connect() as db:
             cursor = await db.execute(
-                "SELECT system_prompt, state FROM baselines "
+                "SELECT system_prompt FROM system_prompts "
                 "WHERE session_id = ? ORDER BY id DESC LIMIT 1",
                 (session_id,),
             )
             row = await cursor.fetchone()
             if row is None:
                 return None
-            return (
-                row["system_prompt"],
-                BaselineState.model_validate_json(row["state"]),
-            )
+            return cast(str, row["system_prompt"])

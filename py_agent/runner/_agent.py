@@ -57,7 +57,9 @@ class AgentRunner:
     Args:
         model: Pydantic AI model used for the agent's main conversation loop.
         system_prompt: Instructions injected at the start of every turn.
-            Defaults to ``""``.
+            ``None`` means "use the stored baseline prompt" when reconnecting
+            to an existing session; it is an error if no baseline exists.
+            Empty strings are also rejected.
         thinking_enabled: Enable Pydantic AI thinking mode for the main model.
             Defaults to ``True``.
         thinking_level: Thinking depth (``"minimal"``, ``"low"``, ``"medium"``,
@@ -106,7 +108,6 @@ class AgentRunner:
     _notify_streamers = staticmethod(_internals.notify_streamers)
     _drain_pending = staticmethod(_internals.drain_pending)
     _build_capabilities = _internals.build_capabilities
-    _build_current_state = _internals.build_current_state
     _fire = _internals.fire
     _fire_notify = _internals.fire_notify
     _get_tools = _internals.get_tools
@@ -121,7 +122,7 @@ class AgentRunner:
         self,
         model: Model,
         *,
-        system_prompt: str = "",
+        system_prompt: str | None = None,
         thinking_enabled: bool = True,
         thinking_level: str | None = None,
         extensions: list[Any] | None = None,
@@ -194,16 +195,18 @@ class AgentRunner:
 
     async def _setup_run(
         self, prompt: str, session_id: str | None
-    ) -> tuple[str, list[Any], list[Any], bool]:
+    ) -> tuple[str, list[Any], list[Any], bool, str]:
         """Shared pre-run setup for ``run()`` / ``run_stream()``.
 
         Returns:
-            A tuple of ``(session_id, history, original_history, needs_compaction)``:
+            A tuple of ``(session_id, history, original_history, needs_compaction, active_sp)``:
 
             - history: message list after context preparation and extension injection
             - original_history: history after context preparation, before extension injection
                 (used to compute the turn delta)
             - needs_compaction: whether context preparation flagged compaction as needed
+            - active_sp: the system prompt to use for this turn (user-provided or
+                loaded from session storage)
         """
         # step 1: create or reuse session
         if session_id is None:
@@ -219,31 +222,41 @@ class AgentRunner:
             session_id, protect_turns=self._protect_turns
         )
 
-        # step 3: load baseline, build current state, detect system prompt changes,
-        # and run prepare() for truncation / diff injection (skipped when no
-        # ContextConfig is configured)
+        # step 3: load stored system prompt and run prepare() for truncation
+        # (skipped when no ContextConfig is configured)
         needs_compaction = False
+        active_sp = self._system_prompt
+        if self._context_config is not None:
+            frozen_sp = await self._session_manager.load_system_prompt(session_id)
+
+            # If the caller did not provide a system prompt, fall back to the
+            # one stored for the session so reconnecting does not require
+            # remembering the original prompt.
+            if active_sp is None:
+                active_sp = frozen_sp
+
+        # Reject empty/blank system prompts whether they came from the caller or
+        # session storage. A prompt with meaningful content is required.
+        active_sp = (active_sp or "").strip()
+        if not active_sp:
+            raise ValueError(
+                "system_prompt must be a non-empty string "
+                f"for session {session_id!r}"
+            )
+
+        if self._context_config is not None:
+            # Persist the resolved system prompt if it differs from the stored
+            # value (or if there is no stored value yet). This makes reconnecting
+            # to a session without re-supplying the prompt possible.
+            if frozen_sp is None or frozen_sp.strip() != active_sp:
+                await self._session_manager.save_system_prompt(
+                    session_id, system_prompt=active_sp
+                )
+
         if self._context_config is not None:
             try:
-                row = await self._session_manager.load_latest_baseline(session_id)
-                frozen_sp = row[0] if row else None
-                frozen_baseline = row[1] if row else None
-                current_state = await self._build_current_state()
-
-                # System prompt changes are handled here, not in prepare(), so that
-                # they silently refresh the stored baseline without injecting a diff.
-                if frozen_sp is None or frozen_sp != self._system_prompt:
-                    await self._session_manager.save_baseline(
-                        session_id,
-                        system_prompt=self._system_prompt,
-                        state=current_state,
-                    )
-                    frozen_baseline = current_state
-
                 prepared = await _prepare_context(
                     history,
-                    frozen_baseline=frozen_baseline,
-                    current_state=current_state,
                     config=self._context_config,
                 )
                 history = prepared.messages
@@ -251,9 +264,8 @@ class AgentRunner:
             except Exception as exc:  # pragma: no cover - fail-open
                 self._on_warning(f"Context prepare failed: {exc}", exc)
 
-        # keep the original copy after context preparation so transient diff
-        # messages are not persisted, while extension-injected messages (which
-        # happen after this point) are still captured in the turn delta
+        # keep the original copy after context preparation so extension-injected
+        # messages (which happen after this point) are captured in the turn delta
         original_history = list(history)
 
         # step 4: CONTEXT_PREPARE event (read-only — extension return values are ignored,
@@ -277,12 +289,13 @@ class AgentRunner:
             {"session_id": session_id, "prompt": prompt, "messages": history},
         )
 
-        return session_id, history, original_history, needs_compaction
+        return session_id, history, original_history, needs_compaction, active_sp
 
     async def _build_agent(
         self,
         session_id: str,
         *,
+        active_sp: str,
         pending: list[Any] | None = None,
         streamers: list[Any] | None = None,
     ) -> Agent:
@@ -326,9 +339,12 @@ class AgentRunner:
         # per turn and manage history/load_history ourselves, so we do not want
         # Pydantic AI to persist a SystemPromptPart that could shadow a later
         # system-prompt change.
+        # `active_sp` is resolved in _setup_run. It is guaranteed non-empty for
+        # multi-turn runs (a baseline or user prompt must exist). For single-turn
+        # runs it is simply the user-provided prompt, which may be empty.
         return Agent(
             model=self._model,
-            instructions=self._system_prompt,
+            instructions=active_sp,
             tools=await self._get_tools(),
             capabilities=capabilities or None,
             model_settings=model_settings,
@@ -431,11 +447,11 @@ class AgentRunner:
         know that ``stream_text()`` is used underneath.
         """
         # 1. setup (load history, context handling, extension injection)
-        session_id, history, original_history, needs_compaction = await self._setup_run(
+        session_id, history, original_history, needs_compaction, active_sp = await self._setup_run(
             prompt, session_id
         )
         # 2. build agent
-        agent = await self._build_agent(session_id)
+        agent = await self._build_agent(session_id, active_sp=active_sp)
 
         # 3. run agent (always uses run_stream; tokens are concatenated into full text internally)
         output_parts: list[str] = []
@@ -481,7 +497,7 @@ class AgentRunner:
         - The final event is still ``{"type": "run_end", ...}``.
         """
         # 1. setup (same as run())
-        session_id, history, original_history, needs_compaction = await self._setup_run(
+        session_id, history, original_history, needs_compaction, active_sp = await self._setup_run(
             prompt, session_id
         )
 
@@ -489,7 +505,7 @@ class AgentRunner:
         streamers = list(self._extensions)
         pending: list[dict[str, Any]] = []
         agent = await self._build_agent(
-            session_id, pending=pending, streamers=streamers
+            session_id, active_sp=active_sp, pending=pending, streamers=streamers
         )
 
         # 3. run agent — notify + drain for every token chunk

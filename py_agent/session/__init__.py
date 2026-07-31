@@ -1,7 +1,6 @@
 """Session adapters — one ABC + three concrete implementations."""
 from __future__ import annotations
 
-from py_agent.models import BaselineState
 from py_agent.session._local import LocalSessionManager
 from py_agent.session._postgres import PostgresSessionManager
 from py_agent.session._single_turn import SingleTurnSessionManager
@@ -12,6 +11,5 @@ __all__ = [
     "SingleTurnSessionManager",
     "LocalSessionManager",
     "PostgresSessionManager",
-    "BaselineState",
     "MessageRole",
 ]

@@ -1,50 +1,35 @@
-"""Context preparation — watermark truncation and baseline diff injection."""
+"""Context preparation — watermark truncation."""
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
 from typing import Any
 
-from pydantic_ai.messages import (
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    ToolReturnPart,
-)
+from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
-from py_agent.models import BaselineState, ContextConfig, PreparedContext
+from py_agent.models import ContextConfig, PreparedContext
 from py_agent.session._shared import _is_turn_start
 
 
 async def _prepare_context(
     messages: list[Any],
     *,
-    frozen_baseline: BaselineState | None,
-    current_state: BaselineState,
     config: ContextConfig,
 ) -> PreparedContext:
     """Prepare messages for the agent run.
 
-    Injects transient diff messages when the current state differs from the
-    frozen baseline, then applies watermark truncation. Diff messages are not
-    persisted; they live only in the returned message list.
+    Applies watermark truncation to old tool results outside the protected
+    turn region. The returned message list is a copy so the caller's list is
+    not mutated.
 
     Args:
         messages: Raw message history loaded from the session backend.
-        frozen_baseline: Last persisted baseline state, if any.
-        current_state: State built from the current AgentRunner configuration.
         config: Immutable truncation / watermark configuration.
 
     Returns:
-        Prepared context with possibly injected diff messages and a compaction flag.
+        Prepared context with truncated tool results and a compaction flag.
     """
     # Work on a copy so the caller's list is not mutated and prepare stays idempotent.
     messages = list(messages)
-
-    if frozen_baseline is not None:
-        diff = _compute_diff(frozen_baseline, current_state)
-        if diff:
-            messages = _inject_diff(messages, diff)
 
     context_cap = config.context_window_cap
     low_mark = context_cap * config.low_watermark_ratio
@@ -157,66 +142,3 @@ def _truncate_and_estimate(
             out.append(msg)
 
     return out, max(total_chars // 4, 1)
-
-
-def _compute_diff(baseline: BaselineState, current: BaselineState) -> str:
-    """Compute a human-readable diff between two baseline states."""
-    lines: list[str] = []
-
-    for name, desc in current.skills.items():
-        if name not in baseline.skills:
-            lines.append(f'  Added skill "{name}": "{desc}"')
-        elif baseline.skills[name] != desc:
-            lines.append(f'  Updated skill "{name}": "{desc}"')
-            # old description available as baseline.skills[name] if needed
-    for name in baseline.skills:
-        if name not in current.skills:
-            lines.append(f'  Removed skill "{name}": "{baseline.skills[name]}"')
-
-    for name, desc in current.tools.items():
-        if name not in baseline.tools:
-            lines.append(f'  Added tool "{name}": "{desc}"')
-        elif baseline.tools[name] != desc:
-            lines.append(f'  Updated tool "{name}": "{desc}"')
-            # old description available as baseline.tools[name] if needed
-    for name in baseline.tools:
-        if name not in current.tools:
-            lines.append(f'  Removed tool "{name}": "{baseline.tools[name]}"')
-
-    baseline_ctx = set(baseline.context)
-    current_ctx = set(current.context)
-    for item in sorted(current_ctx - baseline_ctx):
-        lines.append(f'  Added context "{item}"')
-    for item in sorted(baseline_ctx - current_ctx):
-        lines.append(f'  Removed context "{item}"')
-
-    return "\n".join(lines)
-
-
-def _inject_diff(messages: list[Any], diff: str) -> list[Any]:
-    """Insert a transient diff message before the latest turn start.
-
-    Uses a ``ModelResponse`` with a ``TextPart`` rather than a user request.
-    Pydantic AI merges consecutive ``UserPromptPart`` messages into a single
-    ``ModelRequest``, which forces the diff to be re-persisted; a response
-    message stays separate and is excluded from persistence because it is
-    captured in ``original_history`` after context preparation.
-    """
-    ts = datetime.now(timezone.utc)
-    for i in range(len(messages) - 1, -1, -1):
-        if _is_turn_start(messages[i]):
-            messages.insert(
-                i,
-                ModelResponse(
-                    parts=[
-                        TextPart(
-                            content=f"[System config changed]\n{diff}",
-                            part_kind="text",
-                        )
-                    ],
-                    kind="response",
-                    timestamp=ts,
-                ),
-            )
-            break
-    return messages
