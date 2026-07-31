@@ -158,7 +158,7 @@ class MessageRole(StrEnum):
 #   │   └── TOKEN_STREAM         # per-token chunk during run_stream
 #   ├── AGENT_END                # read-only: output + usage
 #   ├── SESSION_SAVE             # writable: modify delta_messages before persistence
-#   ├── COMPACTION_TRIGGER       # flagged by ContextManager; cancellable
+#   ├── COMPACTION_TRIGGER       # flagged by context preparation; cancellable
 #   │   └── COMPACTION_APPLIED
 #   └── SESSION_END
 #

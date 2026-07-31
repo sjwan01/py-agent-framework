@@ -18,32 +18,38 @@ class SingleTurnSessionManager(SessionManager):
     async def create_session(
         self, *, metadata: dict[str, Any] | None = None
     ) -> str:
-        # generate a UUID as session_id without persisting it
+        """Generate a fresh UUID session id without persisting it."""
         return str(uuid4())
 
     async def ensure_session(
         self, session_id: str, *, metadata: dict[str, Any] | None = None
     ) -> str:
-        # single-turn mode does not persist, so no session row is needed
+        """Return the session id as-is; no session row is needed."""
         return session_id
 
     async def load_history(
         self, session_id: str, *, protect_turns: int = 0
     ) -> list[Any]:
-        # no history, always return empty
+        """Return an empty history for every session."""
         return []
 
     async def save_messages(
         self, session_id: str, messages: list[Any]
     ) -> None:
-        # no persistence, do nothing
+        """Persist nothing; single-turn mode has no storage."""
         pass
 
     async def apply_compaction(self, session_id: str, summary: str, boundary_seq: int) -> None:
-        # single-turn mode does not support compaction
+        """Reject compaction; single-turn mode has no storage.
+
+        Raises:
+            NotImplementedError: Always, because single-turn mode does not
+                support compaction.
+        """
         raise NotImplementedError("SingleTurnSessionManager does not support compaction")
 
     async def get_max_message_seq(self, session_id: str) -> int:
+        """Return -1; single-turn mode has no messages."""
         return -1
 
     async def save_system_prompt(

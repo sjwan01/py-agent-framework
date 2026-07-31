@@ -140,7 +140,7 @@ py_agent/
 ├── types.py              # ABCs, Protocols, enums — zero implementation
 ├── models.py             # Pydantic data models
 ├── tools.py              # ToolSource implementations + ToolLifecycle
-├── context.py            # ContextManager (watermark truncation)
+├── _context.py           # _prepare_context (watermark truncation, pure function)
 ├── _compaction.py        # HarnessSummarizer wrapper
 ├── runner/               # Agent lifecycle orchestration
 │   ├── __init__.py       # re-exports AgentRunner
@@ -171,7 +171,7 @@ py_agent/
 4. **Separation of concerns:**
    - Data shapes → `models.py`
    - Tool registration → `tools.py`
-   - Context management → `context.py`
+   - Context management → `_context.py`
    - Session I/O → `session/`
    - Orchestration → `runner/`
 
@@ -199,7 +199,7 @@ Rules:
 
 | Goes here | Example from this project |
 |-----------|--------------------------|
-| `BaseModel` subclass | `RunResult`, `ContextManagerConfig`, `SummarizerConfig`, `BaselineState` |
+| `BaseModel` subclass | `RunResult`, `ContextConfig`, `SummarizerConfig` |
 
 Rules:
 - **Every `BaseModel` goes in `models.py`.** No exceptions. If a model is
@@ -208,22 +208,11 @@ Rules:
 - Models may have default values, `model_config`, and `@model_validator`.
 - Even internal models (not in `__all__`) live here.
 
-#### Current violations
-
-| File | What | Problem |
-|------|------|---------|
-| `context.py` | `PreparedContext(BaseModel)` | BaseModel → should be in `models.py` |
-| `context.py` | `ContextConfig(BaseModel)` | BaseModel → should be in `models.py` |
-
-These are temporary. When touching `context.py`, move them to `models.py`.
-
----
-
 ## Naming Conventions
 
 | What | Convention | Example |
 |------|-----------|---------|
-| Public classes | PascalCase | `AgentRunner`, `ContextManager` |
+| Public classes | PascalCase | `AgentRunner`, `LocalSessionManager` |
 | Private instance attrs | `_` prefix | `self._model`, `self._protect_turns` |
 | Private modules | `_` prefix | `_agent.py`, `_hooks.py` |
 | Functions in private modules | `_` prefix | `_compute_diff`, `_inject_diff` |
@@ -316,8 +305,8 @@ max_tokens: int = 32_768          # ✓
 ### `None` semantics
 
 `None` consistently means "disabled / use default". Every config model follows
-this: `ContextManagerConfig` is `None` → no context management;
-`SummarizerConfig.model` is `None` → reuse main model.
+this: `context_config` is `None` → single-turn runs have no context
+management; `SummarizerConfig.model` is `None` → reuse main model.
 
 ### Pydantic v2 `model_config`
 
@@ -348,10 +337,10 @@ asyncio_mode = auto
 
 ### Conventions
 
-- Test files mirror source: `test_validation.py` covers `ContextManager` +
+- Test files mirror source: `test_validation.py` covers `ContextConfig` +
   `AgentRunner` constructor invariants.
 - Test classes group related scenarios: `TestCompactionLoading`,
-  `TestContextManagerValidation`.
+  `TestContextConfigValidation`.
 - Every test method has a one-line docstring.
 - Fixtures are defined with docstrings and type hints.
 - Cover: (1) valid-input normal path, (2) invalid-input raises, (3) boundary

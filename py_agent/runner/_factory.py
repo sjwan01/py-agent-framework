@@ -83,9 +83,6 @@ async def trigger_compaction(self: Any, session_id: str) -> None:
        will be loaded).
     3. Summarize all messages (skipped if the summarizer is ``None``).
     4. Write the summary into the ``compactions`` table.
-    5. If the current state has changed, refresh the persisted baseline.
-       Compaction already invalidates the cache, so this is the safe moment to
-       absorb accumulated state diffs into the system prompt.
     """
     try:
         # raw maximum, unaffected by the compactions table
