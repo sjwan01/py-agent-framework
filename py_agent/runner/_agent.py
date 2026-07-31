@@ -456,15 +456,6 @@ class AgentRunner:
         async with agent.run_stream(prompt, message_history=history) as result:
             async for text in result.stream_text(delta=False):
                 output_parts.append(text)
-                # each token chunk also fires a TOKEN_STREAM event
-                # (but not notify_streamers, because run() is not a streaming API)
-                await self._fire(
-                    AgentRunnerEvent.TOKEN_STREAM,
-                    {
-                        "session_id": session_id,
-                        "data": {"chunk": text},
-                    },
-                )
 
         output = "".join(output_parts)
 
