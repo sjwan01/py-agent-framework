@@ -255,12 +255,10 @@ class AgentRunner:
 
         if self._context_config is not None:
             try:
-                prepared = await _prepare_context(
+                history, needs_compaction = await _prepare_context(
                     history,
                     config=self._context_config,
                 )
-                history = prepared.messages
-                needs_compaction = prepared.needs_compaction
             except Exception as exc:  # pragma: no cover - fail-open
                 self._on_warning(f"Context prepare failed: {exc}", exc)
 

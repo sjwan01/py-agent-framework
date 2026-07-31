@@ -156,7 +156,7 @@ All session-scoped state lives in the database, addressed by `session_id`:
 - Compaction records live in the `compactions` table → `load_history` queries only that
   session's boundaries
 - `_prepare_context()` is a pure function accepting `(messages, config)` and returning
-  `PreparedContext`. It holds no state between invocations.
+  `(prepared_messages, needs_compaction)`. It holds no state between invocations.
 
 There is no concept of a "current session" — every `_setup_run` loads the stored system
 prompt fresh from the database for the given session, with no dependence on memory
@@ -319,7 +319,7 @@ monkey-patch internals. The API is split across four import paths by semantic co
 
 | Name | Why not |
 |------|---------|
-| `PreparedContext` | Internal return type of `prepare()`; users never call `prepare()` directly |
+
 | `ToolLifecycle` | Managed internally by `AgentRunner`; users interact via `ToolSource` and events |
 | `HarnessSummarizer` | Compaction implementation detail; configured through `SummarizerConfig` |
 | `ContextManagerConfig` | Removed. `ContextConfig` is the sole context-management config model. Users pass `ContextConfig` directly. |

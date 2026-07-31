@@ -3,22 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 from pydantic_ai.models import Model
-
-
-class PreparedContext(BaseModel):
-    """Output of ``py_agent._context._prepare_context()``.
-
-    Attributes:
-        messages: Messages after truncation and transient diff injection.
-        needs_compaction: Whether the context size exceeds the high watermark.
-        tokens_used: Rough token estimate of the returned messages.
-    """
-
-    messages: list[Any] = Field(default_factory=list)
-    needs_compaction: bool = False
-    tokens_used: int = 0
 
 
 class ContextConfig(BaseModel):

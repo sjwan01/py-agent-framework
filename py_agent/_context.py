@@ -6,7 +6,7 @@ from typing import Any
 
 from pydantic_ai.messages import ModelRequest, ToolReturnPart
 
-from py_agent.models import ContextConfig, PreparedContext
+from py_agent.models import ContextConfig
 from py_agent.session._shared import _is_turn_start
 
 
@@ -14,7 +14,7 @@ async def _prepare_context(
     messages: list[Any],
     *,
     config: ContextConfig,
-) -> PreparedContext:
+) -> tuple[list[Any], bool]:
     """Prepare messages for the agent run.
 
     Applies watermark truncation to old tool results outside the protected
@@ -26,7 +26,7 @@ async def _prepare_context(
         config: Immutable truncation / watermark configuration.
 
     Returns:
-        Prepared context with truncated tool results and a compaction flag.
+        A tuple of ``(prepared_messages, needs_compaction)``.
     """
     # Work on a copy so the caller's list is not mutated and prepare stays idempotent.
     messages = list(messages)
@@ -40,20 +40,12 @@ async def _prepare_context(
     )
 
     if total_tokens <= low_mark:
-        return PreparedContext(
-            messages=messages,
-            needs_compaction=total_tokens > high_mark,
-            tokens_used=total_tokens,
-        )
+        return messages, total_tokens > high_mark
 
     messages, tokens_after = _truncate_and_estimate(
         messages, boundary, config.truncate_chars
     )
-    return PreparedContext(
-        messages=messages,
-        needs_compaction=tokens_after > high_mark,
-        tokens_used=tokens_after,
-    )
+    return messages, tokens_after > high_mark
 
 
 # Single forward pass: estimate tokens and find the turn boundary.
