@@ -51,7 +51,35 @@ async def _prepare_context(
 
 # Single forward pass: estimate tokens and find the turn boundary.
 # Merges the former _default_estimate and _find_turn_boundary helpers.
-# Walks forward once, accumulating characters and recording each user turn start.
+# Walks forward once, accumulating per-content token estimates and recording
+# each user turn start.
+
+
+def _estimate_tokens(text: str) -> int:
+    """Estimate the token count of ``text`` with script-aware weighting.
+
+    CJK characters cost roughly one token each; other characters roughly
+    four per token. Without the CJK weighting, a Chinese conversation would
+    be undercounted by up to 4x and watermark truncation would trigger far
+    too late. This is a heuristic, not a tokenizer.
+
+    Args:
+        text: The string content to estimate.
+
+    Returns:
+        The estimated token count, or 0 for empty text.
+    """
+    if not text:
+        return 0
+    cjk = 0
+    for ch in text:
+        if (
+            "\u3400" <= ch <= "\u4dbf"  # CJK Extension A
+            or "\u4e00" <= ch <= "\u9fff"  # CJK Unified Ideographs
+            or "\uff00" <= ch <= "\uffef"  # Fullwidth forms
+        ):
+            cjk += 1
+    return cjk + (len(text) - cjk) // 4
 
 
 def _estimate_and_find_boundary(
@@ -59,11 +87,12 @@ def _estimate_and_find_boundary(
 ) -> tuple[int, int]:
     """Return a rough token estimate and the truncation boundary.
 
-    ``total_tokens`` is a rough estimate (total characters divided by 4).
-    ``boundary`` is the start index of the ``protect``-th user turn from the end.
-    Messages before ``boundary`` may be truncated.
+    ``total_tokens`` is estimated per content string via ``_estimate_tokens``.
+    ``boundary`` is the start index of the ``protect``-th user turn from the
+    end; messages before ``boundary`` may be truncated. ``protect <= 0`` means
+    nothing is protected, so every message may be truncated.
     """
-    total_chars = 0
+    total_tokens = 0
     turn_starts: list[int] = []
 
     for i, msg in enumerate(messages):
@@ -72,13 +101,19 @@ def _estimate_and_find_boundary(
         for part in getattr(msg, "parts", ()):
             content = getattr(part, "content", None)
             if isinstance(content, str):
-                total_chars += len(content)
+                total_tokens += _estimate_tokens(content)
 
-    tokens = max(total_chars // 4, 1)
+    tokens = max(total_tokens, 1)
 
-    if len(turn_starts) >= protect:
+    if protect <= 0:
+        # protect=0 means "protect nothing": every message may be truncated.
+        # (turn_starts[-0] would resolve to turn_starts[0], which would
+        # protect everything — the opposite of the intent.)
+        boundary = len(messages)
+    elif len(turn_starts) >= protect:
         boundary = turn_starts[-protect]
     else:
+        # fewer turns than protect_turns: fall back to full history, no truncation
         boundary = 0
 
     return tokens, boundary
@@ -86,7 +121,29 @@ def _estimate_and_find_boundary(
 
 # Single forward pass: truncate old tool results and re-estimate.
 # Merges the former _truncate_old_tool_results and the second estimation pass.
-# Truncates old tool results before the boundary while accumulating the truncated character count.
+# Truncates old tool results before the boundary while accumulating the
+# estimated token count of every content string.
+
+
+def _truncate_content(content: str, max_chars: int) -> str:
+    """Truncate ``content`` and mark how many characters were removed.
+
+    The cut point falls back to the last complete line when possible, so
+    multi-line JSON results end on a field boundary. The appended marker
+    reports the removed character count so the model knows the result is
+    incomplete instead of mistaking a partial value for the full one.
+
+    Args:
+        content: The tool result content to truncate.
+        max_chars: Maximum characters to keep before the marker.
+
+    Returns:
+        The truncated content plus a ``...[truncated: N chars]`` marker.
+    """
+    cut = content.rfind("\n", 0, max_chars)
+    head = content[:cut] if cut > 0 else content[:max_chars]
+    removed = len(content) - len(head)
+    return f"{head}\n...[truncated: {removed} chars]"
 
 
 def _truncate_and_estimate(
@@ -96,10 +153,10 @@ def _truncate_and_estimate(
 
     Does not mutate the original ``messages``. Only exact ``ToolReturnPart``
     instances (not subclasses) whose ``content`` is a string longer than
-    ``max_chars`` are truncated.
+    ``max_chars`` are truncated via ``_truncate_content``.
     """
     out: list[Any] = []
-    total_chars = 0
+    total_tokens = 0
 
     for i, msg in enumerate(messages):
         # messages outside the truncation range still need their parts counted for tokens
@@ -108,7 +165,7 @@ def _truncate_and_estimate(
             for part in getattr(msg, "parts", ()):
                 content = getattr(part, "content", None)
                 if isinstance(content, str):
-                    total_chars += len(content)
+                    total_tokens += _estimate_tokens(content)
             continue
 
         new_parts: list[Any] = []
@@ -119,19 +176,19 @@ def _truncate_and_estimate(
                 and isinstance(part.content, str)
                 and len(part.content) > max_chars
             ):
-                truncated_content = part.content[:max_chars]
+                truncated_content = _truncate_content(part.content, max_chars)
                 new_parts.append(replace(part, content=truncated_content))
                 changed = True
-                total_chars += len(truncated_content)
+                total_tokens += _estimate_tokens(truncated_content)
             else:
                 new_parts.append(part)
                 content = getattr(part, "content", None)
                 if isinstance(content, str):
-                    total_chars += len(content)
+                    total_tokens += _estimate_tokens(content)
 
         if changed:
             out.append(replace(msg, parts=new_parts))
         else:
             out.append(msg)
 
-    return out, max(total_chars // 4, 1)
+    return out, max(total_tokens, 1)
