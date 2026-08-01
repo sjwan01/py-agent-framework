@@ -52,7 +52,7 @@ verify provider-side cache-key computation. Instead, it focuses on two concrete,
 observable goals:
 
 1. Avoid exceeding the configured context-window cap by truncating old tool results.
-2. When truncation alone is no longer enough, replace the distant past with a compact
+2. When truncation alone is no longer enough, present the distant past as a compact
    LLM-generated summary so the model still has coarse-grained history.
 
 ### Dual Watermarks
@@ -70,7 +70,7 @@ Design intent:
 token count growth →→→
   Below low watermark:     do nothing
   Low ↔ High watermark:    truncate old tool results (space reclaimed, minimal disruption)
-  Above high watermark:    trigger compaction (history replaced by summary, deferred)
+  Above high watermark:    trigger compaction (history summarized at load time, deferred)
 ```
 
 - A single-watermark design triggers compaction as soon as a threshold is crossed →
@@ -102,7 +102,7 @@ consistent: what gets truncated and what gets summarized use the same cutoff.
 
 ### Data Model
 
-- `messages` table: one row per message, `message_seq` monotonically increasing
+- `messages` table: one row per message, `message_seq` monotonically increasing. Rows are never deleted — the full conversation history is always retained (see "Compaction Is Read-Time Only" below).
 - `compactions` table: one row per compaction, `(boundary_seq, summary_text)`. `boundary` records which `message_seq` the summary covers up to.
 - `system_prompts` table: one row per system prompt write, ordered by write time. The
   latest row is used to reconnect to a session without re-supplying the prompt.
@@ -127,6 +127,19 @@ Critical detail: the query does not simply take the most recent compaction. If t
 compaction's boundary falls inside the protected region of N recent turns, it is skipped
 in favor of an older one. This is what "protect the last N turns from compaction" actually
 means at read time.
+
+### Compaction Is Read-Time Only
+
+Compaction changes what the model *sees*, never what is *stored*. The `messages` table
+keeps the full conversation history — `apply_compaction` only inserts a row into
+`compactions`, and `load_history` decides at read time whether to present the summary
+plus recent messages or the raw history. No rows are ever deleted.
+
+Retaining full history is deliberate, not an oversight. Deleting summarized rows would
+make it impossible to trace back: audit a claim against the original turn, re-run
+analytics over tool call patterns, or answer "what exactly was said in turn 10".
+Trading that away for storage savings is bad practice. If the hot table ever grows too
+large, the fix is an archival strategy (moving old rows out), not in-place deletion.
 
 ### Message Saving: Delta-Only
 
