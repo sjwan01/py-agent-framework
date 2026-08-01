@@ -225,6 +225,21 @@ Rules:
 
 ## Architecture Patterns
 
+### Design decision rule of thumb
+
+When choosing between implementation options, evaluate in this order:
+
+1. **Semantic correctness first** — the option whose model of the problem is
+   actually correct. A column that faithfully classifies its data beats a
+   query that works around a mislabeled column.
+2. **Natively correct over hack** — prefer the platform's native mechanisms
+   (schema columns, indexes, types) over workarounds (parsing serialized
+   blobs, magic offsets). A hack may be "correct today" but breaks when the
+   underlying format changes.
+3. **Performance last** — only after 1 and 2 are satisfied, pick the option
+   with the best performance. Never trade semantic correctness or a native
+   design for speed.
+
 ### ABC + multiple implementations
 
 `SessionManager` (ABC in `types.py`) → `SingleTurnSessionManager`,
