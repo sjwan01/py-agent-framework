@@ -10,7 +10,7 @@ from psycopg import AsyncConnection
 from psycopg_pool import AsyncConnectionPool
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 
-from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
+from py_agent.session._shared import _infer_role, _MessageAdapter
 from py_agent.types import SessionManager
 
 # PostgreSQL schema
@@ -39,6 +39,9 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_seq_pg
     ON messages(session_id, message_seq);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_role_pg
+    ON messages(session_id, role, message_seq);
 
 CREATE TABLE IF NOT EXISTS compactions (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
@@ -202,8 +205,12 @@ class PostgresSessionManager(SessionManager):
         max_seq: int,
         protect_turns: int,
     ) -> int:
-        """Walk backwards from *max_seq* to find the sequence number
-        after *protect_turns* user turns.
+        """Find the sequence number after *protect_turns* user turns.
+
+        Uses the ``role`` column (an exact classification written by
+        ``_infer_role``: ``'user'`` is equivalent to ``_is_turn_start``) so
+        the lookup is a single indexed query instead of scanning and
+        decoding every message.
 
         Returns ``max_seq + 1`` when *protect_turns* is 0 (no protection —
         every compaction is eligible). Returns 0 when there aren't enough
@@ -213,19 +220,15 @@ class PostgresSessionManager(SessionManager):
             return max_seq + 1
 
         cursor = await conn.execute(
-            "SELECT message_seq, content FROM messages "
-            "WHERE session_id = %s AND message_seq <= %s "
-            "ORDER BY message_seq DESC",
-            (session_id, max_seq),
+            "SELECT message_seq FROM messages "
+            "WHERE session_id = %s AND message_seq <= %s AND role = 'user' "
+            "ORDER BY message_seq DESC LIMIT 1 OFFSET %s",
+            (session_id, max_seq, protect_turns - 1),
         )
-        turns = 0
-        async for row in cursor:
-            msg = _deserialize_pg_message(row[1])
-            if _is_turn_start(msg):
-                turns += 1
-                if turns >= protect_turns:
-                    return int(row[0])
-        return 0
+        row = await cursor.fetchone()
+        if row is None:
+            return 0
+        return int(row[0])
 
     async def get_max_message_seq(self, session_id: str) -> int:
         """Return the current maximum ``message_seq`` for the session, or ``-1`` if empty."""

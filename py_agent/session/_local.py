@@ -11,7 +11,7 @@ from uuid import uuid4
 import aiosqlite
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 
-from py_agent.session._shared import _infer_role, _is_turn_start, _MessageAdapter
+from py_agent.session._shared import _infer_role, _MessageAdapter
 from py_agent.types import SessionManager
 
 # SQLite schema
@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS messages (
 
 CREATE INDEX IF NOT EXISTS idx_messages_session_seq
     ON messages(session_id, message_seq);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_role
+    ON messages(session_id, role, message_seq);
 
 CREATE TABLE IF NOT EXISTS compactions (
     session_id TEXT NOT NULL REFERENCES sessions(session_id),
@@ -185,8 +188,12 @@ class LocalSessionManager(SessionManager):
         max_seq: int,
         protect_turns: int,
     ) -> int:
-        """Walk backwards from *max_seq* to find the sequence number
-        after *protect_turns* user turns.
+        """Find the sequence number after *protect_turns* user turns.
+
+        Uses the ``role`` column (an exact classification written by
+        ``_infer_role``: ``'user'`` is equivalent to ``_is_turn_start``) so
+        the lookup is a single indexed query instead of scanning and
+        decoding every message.
 
         Returns ``max_seq + 1`` when *protect_turns* is 0 (no protection —
         every compaction is eligible). Returns 0 when there aren't enough
@@ -196,19 +203,15 @@ class LocalSessionManager(SessionManager):
             return max_seq + 1
 
         cursor = await db.execute(
-            "SELECT message_seq, content FROM messages "
-            "WHERE session_id = ? AND message_seq <= ? "
-            "ORDER BY message_seq DESC",
-            (session_id, max_seq),
+            "SELECT message_seq FROM messages "
+            "WHERE session_id = ? AND message_seq <= ? AND role = 'user' "
+            "ORDER BY message_seq DESC LIMIT 1 OFFSET ?",
+            (session_id, max_seq, protect_turns - 1),
         )
-        turns = 0
-        async for row in cursor:
-            msg = _MessageAdapter.validate_json(row["content"].encode())
-            if _is_turn_start(msg):
-                turns += 1
-                if turns >= protect_turns:
-                    return int(row["message_seq"])
-        return 0
+        row = await cursor.fetchone()
+        if row is None:
+            return 0
+        return int(row["message_seq"])
 
     async def get_max_message_seq(self, session_id: str) -> int:
         """Return the current maximum ``message_seq`` for the session, or ``-1`` if empty."""

@@ -102,7 +102,7 @@ consistent: what gets truncated and what gets summarized use the same cutoff.
 
 ### Data Model
 
-- `messages` table: one row per message, `message_seq` monotonically increasing. Rows are never deleted — the full conversation history is always retained (see "Compaction Is Read-Time Only" below).
+- `messages` table: one row per message, `message_seq` monotonically increasing. Rows are never deleted — the full conversation history is always retained (see "Compaction Is Read-Time Only" below). The `role` column is an exact classification written by `_infer_role` — `'user'` is equivalent to a turn start and drives the cutoff lookup in `load_history`; non-user non-tool requests classify as `'unknown'` and are never mistaken for `'user'`.
 - `compactions` table: one row per compaction, `(boundary_seq, summary_text)`. `boundary` records which `message_seq` the summary covers up to.
 - `system_prompts` table: one row per system prompt write, ordered by write time. The
   latest row is used to reconnect to a session without re-supplying the prompt.

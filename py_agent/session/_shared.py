@@ -16,20 +16,35 @@ _MessageAdapter: TypeAdapter[ModelMessage] = TypeAdapter(ModelMessage)
 
 
 def _infer_role(msg: ModelMessage) -> MessageRole:
-    """Infer the message role from its type and first part for the DB role column.
+    """Classify the message for the DB role column.
 
-    This is only a marker for the DB; it does not affect the deserialized
-    message object.
+    The role is an exact classification, not a marker:
+
+    - ``USER`` — a ``ModelRequest`` whose first part is a ``UserPromptPart``
+      (exactly ``_is_turn_start``);
+    - ``TOOL`` — a ``ModelRequest`` whose first part is a tool return;
+    - ``UNKNOWN`` — any other ``ModelRequest`` (e.g. system-prompt-led
+      messages or future part kinds), never confused with ``USER``;
+    - ``ASSISTANT`` — a ``ModelResponse``.
+
+    ``_find_cutoff_seq`` relies on ``role = 'user'`` being equivalent to
+    ``_is_turn_start``. Keep this function delegating to ``_is_turn_start``
+    and, if the turn-start definition ever changes, rewrite the stored
+    ``role`` values as well.
+
+    This classification does not affect the deserialized message object.
     """
-    # ModelRequest with a first part that has tool_name is a tool return message.
     if isinstance(msg, ModelRequest):
-        parts = msg.parts
-        if parts and hasattr(parts[0], "tool_name"):
+        if _is_turn_start(msg):
+            return MessageRole.USER
+        if msg.parts and hasattr(msg.parts[0], "tool_name"):
             return MessageRole.TOOL
-        return MessageRole.USER
+        return MessageRole.UNKNOWN
     # ModelResponse is an assistant reply.
     if isinstance(msg, ModelResponse):
         return MessageRole.ASSISTANT
+    # Unreachable under the current ModelMessage union; kept as a defensive
+    # catch-all for future message kinds.
     return MessageRole.UNKNOWN  # type: ignore[unreachable]
 
 
