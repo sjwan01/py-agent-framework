@@ -226,22 +226,36 @@ class LocalSessionManager(SessionManager):
     async def _load_all_messages(
         self, db: aiosqlite.Connection, session_id: str
     ) -> list[Any]:
+        """Load every message for the session.
+
+        Iterates the cursor row by row so only one JSON string is in memory
+        at a time instead of the whole result set.
+        """
         cursor = await db.execute(
             "SELECT content FROM messages WHERE session_id = ? ORDER BY message_seq",
             (session_id,),
         )
-        rows = await cursor.fetchall()
-        return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
+        messages: list[Any] = []
+        async for row in cursor:
+            messages.append(_MessageAdapter.validate_json(row["content"].encode()))
+        return messages
 
     async def _load_messages_after(
         self, db: aiosqlite.Connection, session_id: str, boundary_seq: int
     ) -> list[Any]:
+        """Load messages with ``message_seq`` greater than *boundary_seq*.
+
+        Iterates the cursor row by row so only one JSON string is in memory
+        at a time instead of the whole result set.
+        """
         cursor = await db.execute(
             "SELECT content FROM messages WHERE session_id = ? AND message_seq > ? ORDER BY message_seq",
             (session_id, boundary_seq),
         )
-        rows = await cursor.fetchall()
-        return [_MessageAdapter.validate_json(row["content"].encode()) for row in rows]
+        messages: list[Any] = []
+        async for row in cursor:
+            messages.append(_MessageAdapter.validate_json(row["content"].encode()))
+        return messages
 
     async def save_messages(
         self, session_id: str, messages: list[Any]
