@@ -398,9 +398,9 @@ class AgentRunner:
         # Agent-end events
         payload = {"session_id": session_id, "output": output, "usage": usage}
         await self._fire(AgentRunnerEvent.AFTER_AGENT_RUN, payload)
-        await self._notify_streamers(streamers, AgentRunnerEvent.AFTER_AGENT_RUN, payload, pending)
+        await self._notify_streamers(streamers, AgentRunnerEvent.AFTER_AGENT_RUN, payload, pending, on_warning=self._on_warning)
         await self._fire(AgentRunnerEvent.AGENT_END, payload)
-        await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_END, payload, pending)
+        await self._notify_streamers(streamers, AgentRunnerEvent.AGENT_END, payload, pending, on_warning=self._on_warning)
         async for chunk in self._drain_pending(pending):
             yield chunk
 
@@ -410,7 +410,7 @@ class AgentRunner:
         if "delta_messages" in save_payload:
             delta_messages = save_payload["delta_messages"]
         await self._session_manager.save_messages(session_id, delta_messages)
-        await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_SAVE, save_payload, pending)
+        await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_SAVE, save_payload, pending, on_warning=self._on_warning)
         async for chunk in self._drain_pending(pending):
             yield chunk
 
@@ -429,14 +429,14 @@ class AgentRunner:
             # notify extensions of the compaction outcome (cancelled or triggered)
             applied_payload = {"session_id": session_id, "cancelled": bool(cancelled)}
             await self._fire(AgentRunnerEvent.COMPACTION_APPLIED, applied_payload)
-            await self._notify_streamers(streamers, AgentRunnerEvent.COMPACTION_APPLIED, applied_payload, pending)
+            await self._notify_streamers(streamers, AgentRunnerEvent.COMPACTION_APPLIED, applied_payload, pending, on_warning=self._on_warning)
             async for chunk in self._drain_pending(pending):
                 yield chunk
 
         # Session end
         end_payload = {"session_id": session_id}
         await self._fire(AgentRunnerEvent.SESSION_END, end_payload)
-        await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_END, end_payload, pending)
+        await self._notify_streamers(streamers, AgentRunnerEvent.SESSION_END, end_payload, pending, on_warning=self._on_warning)
         async for chunk in self._drain_pending(pending):
             yield chunk
 
@@ -525,6 +525,7 @@ class AgentRunner:
                 await self._fire(AgentRunnerEvent.TOKEN_STREAM, payload)
                 await self._notify_streamers(
                     streamers, AgentRunnerEvent.TOKEN_STREAM, payload, pending,
+                    on_warning=self._on_warning,
                 )
                 # drain pending chunks to the external consumer
                 async for chunk in self._drain_pending(pending):
