@@ -121,6 +121,10 @@ def build_hooks(
             "is_error": False,
         }
         result_data = await self._fire(AgentRunnerEvent.TOOL_RESULT, result_data)
+        # A present ``content`` key wins — including an explicit None, which
+        # extensions may use to clear the result. "No modification" is
+        # expressed by returning None (no dict) or omitting ``content``, not by
+        # ``{"content": None}``.
         content = result_data.get("content", result)
 
         # TOOL_END: notify extensions that the tool call completed
