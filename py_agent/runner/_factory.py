@@ -98,6 +98,15 @@ async def trigger_compaction(self: Any, session_id: str) -> None:
         messages = await self._session_manager.load_history(session_id)
         summary = await summarizer.summarize(messages)
 
+        if not summary.strip():
+            # an empty summary would inject a meaningless shell on the next load
+            self._on_warning(
+                f"Compaction produced an empty summary for session "
+                f"{session_id}; skipping",
+                None,
+            )
+            return
+
         await self._session_manager.apply_compaction(
             session_id,
             summary=summary,
