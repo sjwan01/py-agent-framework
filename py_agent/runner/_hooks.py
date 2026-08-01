@@ -65,7 +65,7 @@ def build_hooks(
         }
         # notify both chain-mode extensions and streaming extensions
         await self._fire(AgentRunnerEvent.TOOL_START, payload)
-        await self._notify_streamers(streamers, AgentRunnerEvent.TOOL_START, payload, pending)
+        await self._notify_streamers(streamers, AgentRunnerEvent.TOOL_START, payload, pending, on_warning=self._on_warning)
         return args
 
     # Stage 2: actual tool execution (blockable / arg mutable)
@@ -95,7 +95,7 @@ def build_hooks(
         call_result = await self._fire(AgentRunnerEvent.TOOL_CALL, call_data)
 
         # extension chose to block
-        if call_result.get("block"):
+        if call_result.get("block") is True:
             reason = call_result.get("reason", "Blocked by extension")
             return f"Tool call blocked: {reason}"
 
@@ -130,7 +130,7 @@ def build_hooks(
             "data": {"result": content},
         }
         await self._fire(AgentRunnerEvent.TOOL_END, payload)
-        await self._notify_streamers(streamers, AgentRunnerEvent.TOOL_END, payload, pending)
+        await self._notify_streamers(streamers, AgentRunnerEvent.TOOL_END, payload, pending, on_warning=self._on_warning)
 
         return content
 
