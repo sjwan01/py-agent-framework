@@ -391,3 +391,31 @@ are usually pinned to one worker).
 `apply_compaction`. Note that write-side idempotency alone cannot prevent the
 duplicate `summarize` call — the expensive step happens before the write — so
 a full fix requires reserving the boundary before summarization.
+
+### P2. In-memory history cache for hot sessions (not built, by design)
+
+**Idea.** Same-process, same-session turns re-read the full history from the
+database on every `run()`. Keeping decoded history in memory and only writing
+to the DB — maintaining consistency — would eliminate those reads.
+
+**Why it is not built.** It directly contradicts the Zero Instance State
+design (see Cross-Session Isolation): session-scoped memory state, cache
+invalidation, and multi-instance consistency are exactly what that design
+eliminates. The concrete challenges:
+
+- background compaction (`trigger_compaction`) mutates the DB between turns
+  and would race with an in-memory cache;
+- multiple instances sharing a session (the Postgres deployment form) each
+  hold their own cache — permanent inconsistency;
+- public `save_messages` / `apply_compaction` can be invoked externally,
+  bypassing the cache;
+- process restart or a new runner reconnecting to the session must rebuild
+  from the DB anyway.
+
+**When it would be worth it.** Only a single-process deployment with a
+long-lived session and high turn frequency. For the general framework the DB
+stays the single source of truth.
+
+**If ever built.** A bounded form: cache only the decoded message list and
+append per-turn deltas, with an explicit invalidation contract covering
+compaction and external writes. Not a general cache layer.
