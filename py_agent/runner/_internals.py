@@ -173,7 +173,7 @@ async def fire_notify(
                 exc,
             )
             continue
-        if isinstance(r, dict) and r.get(cancel_key):
+        if isinstance(r, dict) and r.get(cancel_key) is True:
             cancelled = True
     return {cancel_key: cancelled}
 
