@@ -7,7 +7,7 @@ These functions are bound as instance methods on the ``AgentRunner`` class in
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from pydantic_ai.messages import ModelRequest, ModelResponse
@@ -20,7 +20,7 @@ def messages_to_persist(
 
     Pydantic AI's ``result.new_messages()`` treats messages injected by
     extensions during ``BEFORE_AGENT_RUN`` as "old history" and excludes them.
-    V2 needs those injected messages to be persisted so they can be restored on
+    Extension-injected messages must be persisted so they can be restored on
     the next turn. Because the SDK does not expose a primitive to distinguish
     "originally loaded history" from "extension-injected messages", we compute
     the difference manually.
@@ -70,6 +70,7 @@ async def notify_streamers(
     event: str,
     data: dict[str, Any],
     pending: list[Any],
+    on_warning: Callable[[str, Exception | None], None],
 ) -> None:
     """Push runtime events to all streaming extensions.
 
@@ -77,7 +78,15 @@ async def notify_streamers(
     generator. Their yielded chunks are appended to ``pending`` and later
     drained by ``run_stream()`` to the external consumer.
 
-    Extensions without ``on_agent_runner_event_stream`` are silently skipped.
+    Extensions without ``on_agent_runner_event_stream`` are silently skipped;
+    extensions that raise are warned about and skipped (fail-open).
+
+    Args:
+        streamers: Extensions that should receive streaming events.
+        event: The event name being dispatched.
+        data: The event payload.
+        pending: Staging list that collects yielded chunks.
+        on_warning: Callback for non-fatal streaming extension failures.
     """
     for s in streamers:
         stream_fn = getattr(s, "on_agent_runner_event_stream", None)
@@ -86,8 +95,11 @@ async def notify_streamers(
         try:
             async for chunk in stream_fn(event, data):
                 pending.append(chunk)
-        except Exception:  # pragma: no cover - fail-open
-            pass
+        except Exception as exc:  # pragma: no cover - fail-open
+            on_warning(
+                f"Streaming extension {type(s).__name__} failed for {event}: {exc}",
+                exc,
+            )
 
 
 async def drain_pending(
