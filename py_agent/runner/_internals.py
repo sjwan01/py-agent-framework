@@ -107,6 +107,10 @@ async def fire_notify(
     does not see other extensions' modifications. Supports cancellation:
     if any extension returns ``{cancel_key: True}``, the final result is
     ``{cancel_key: True}``.
+
+    Note: the result does not distinguish "no extensions voted" from "all
+    extensions voted against" — both yield ``{cancel_key: False}``. Callers
+    that only need the boolean decision are unaffected.
     """
     snapshot = dict(data)
     cancelled = False
