@@ -32,6 +32,15 @@ class HarnessSummarizer:
         self._strategy = SummarizingCompaction(**kwargs)
 
     async def summarize(self, messages: list[Any]) -> str:
+        """Summarize a message list into a compact history.
+
+        Args:
+            messages: The full message history to compact.
+
+        Returns:
+            The generated summary text. Returns an empty string when the
+            summarizer produces no summary; callers should skip persisting it.
+        """
         ctx = cast(Any, SimpleNamespace(usage=RunUsage()))
         compacted = await self._strategy.compact(messages, ctx)
         for msg in compacted:
