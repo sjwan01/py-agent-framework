@@ -308,6 +308,46 @@ max_tokens: int = 32_768          # ✓
 this: `context_config` is `None` → single-turn runs have no context
 management; `SummarizerConfig.model` is `None` → reuse main model.
 
+### Boolean checks — explicit comparison, especially `True` / `False` / `None`
+
+Two kinds of boolean checks exist and must not be mixed:
+
+- **Contract booleans** — values whose documented contract is a literal
+  `True` / `False`, e.g. `{block: true}` / `{cancel: true}` returned by
+  extensions. Compare strictly with `is True` / `is False`. Never rely on
+  truthiness: `1`, `"yes"`, and other truthy values are NOT the documented
+  contract and must not trigger it (the writer is external and not under our
+  control).
+
+  ```python
+  # ✓  only an explicit True blocks
+  if call_result.get("block") is True:
+  # ✗  {"block": 1} or {"block": "yes"} would also trigger this
+  if call_result.get("block"):
+  ```
+
+- **Emptiness checks** — checking for "has content" on lists, strings, or
+  dicts that we own. Truthiness is acceptable for these, but when the check
+  tests a *specific value*, write the comparison explicitly — the reader
+  should not have to know Python truthiness rules.
+
+  ```python
+  # ✓  non-empty list
+  if messages:
+  # ✓  empty/blank string
+  if not active_sp:
+  # ✓  None is always an explicit comparison
+  if frozen_sp is None:
+  ```
+
+Rules:
+
+1. `None` checks are always `is None` / `is not None`, never truthiness.
+2. When a check tests a specific value (`True`, `False`, `None`, a literal),
+   write it explicitly. If it can be written explicitly, it should be.
+3. Contract booleans received from extensions (or any external input) must
+   use strict identity comparison (`is True` / `is False`).
+
 ### Pydantic v2 `model_config`
 
 When a model field holds a non-Pydantic type (like `pydantic_ai.models.Model`):
@@ -357,4 +397,7 @@ asyncio_mode = auto
 - ❌ Relaxing mypy strictness without a documented reason
 - ❌ Letting extension failures crash the agent loop
 - ❌ Adding public API without an `__all__` entry
+- ❌ Truthy checks on contract booleans: `if result.get("block"):` — truthy
+  values like `1` / `"yes"` would trigger behavior outside the documented
+  `{block: true}` contract; use `is True`
 - ❌ Implementation logic in `types.py`
