@@ -10,60 +10,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
-from pydantic_ai.messages import ModelRequest, ModelResponse
-
-
-def messages_to_persist(
-    original_history: list[Any], all_messages: list[Any]
-) -> list[Any]:
-    """Compute the messages that should be persisted this turn.
-
-    Pydantic AI's ``result.new_messages()`` treats messages injected by
-    extensions during ``BEFORE_AGENT_RUN`` as "old history" and excludes them.
-    Extension-injected messages must be persisted so they can be restored on
-    the next turn. Because the SDK does not expose a primitive to distinguish
-    "originally loaded history" from "extension-injected messages", we compute
-    the difference manually.
-
-    Deduplication logic:
-
-    1. Fast identity check via ``id()`` — Pydantic AI does not deep-copy the
-       passed ``message_history``, so the same object keeps the same id.
-    2. If a message was copied (different id), fall back to a stable content key
-       based on ``(kind, run_id, parts summary)``.
-    """
-    # first pass: filter by Python object identity
-    original_ids = {id(m) for m in original_history}
-
-    def _key(m: Any) -> tuple[Any, ...]:
-        """Build a stable content key for a message.
-
-        Used when object identity differs because the message was copied.
-        """
-        kind = "request" if isinstance(m, ModelRequest) else (
-            "response" if isinstance(m, ModelResponse) else type(m).__name__
-        )
-        parts: list[Any] = []
-        for part in getattr(m, "parts", ()):
-            pk = getattr(part, "part_kind", None)
-            if pk == "user-prompt":
-                parts.append(("user-prompt", part.content))
-            elif pk == "tool-return":
-                parts.append(("tool-return", part.tool_name, part.tool_call_id, str(part.content)))
-            elif pk == "text":
-                parts.append(("text", part.content))
-            elif pk == "tool-call":
-                parts.append(("tool-call", part.tool_name, part.tool_call_id, str(part.args)))
-            else:
-                parts.append((str(pk), repr(part)))
-        return (kind, getattr(m, "run_id", None), tuple(parts))
-
-    original_keys = {_key(m) for m in original_history}
-    return [
-        m for m in all_messages
-        if id(m) not in original_ids and _key(m) not in original_keys
-    ]
-
 
 async def notify_streamers(
     streamers: list[Any],

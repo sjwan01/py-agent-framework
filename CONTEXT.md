@@ -143,12 +143,19 @@ large, the fix is an archival strategy (moving old rows out), not in-place delet
 
 ### Message Saving: Delta-Only
 
-At the end of each turn, `original_history` (after context prepare, before extension
-injection) is compared against `all_messages` (after the Agent finishes). Only the
-newly produced messages — the delta — are written to the `messages` table. Because
-extension-injected messages happen after `original_history` is captured, they are
-included in the delta and persisted; messages produced by Pydantic AI during the run
-(such as SystemPromptPart) are excluded from the delta and are not persisted.
+At the end of each turn, the delta is the union of two parts:
+
+1. `result.new_messages()` — messages the SDK itself tracked as new (user
+   prompt, tool results, model reply).
+2. The extension-injected messages, captured in `_setup_run` **at injection
+   time**: after `BEFORE_AGENT_RUN`, any message whose identity is not in the
+   pre-injection history is recorded. Identity is stable at that moment — the
+   Agent has not touched the messages yet — so this needs no diffing against
+   the post-run message list and no reliance on SDK copy behavior.
+
+The delta is written to the `messages` table. Messages produced by Pydantic AI
+during the run that are not part of the conversation (such as SystemPromptPart)
+are excluded by `new_messages()` and are not persisted.
 
 ---
 

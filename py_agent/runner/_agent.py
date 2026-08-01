@@ -107,7 +107,6 @@ class AgentRunner:
 
     # --- from _internals.py (runtime helpers) ---
     _build_hooks = _hooks.build_hooks
-    _messages_to_persist = staticmethod(_internals.messages_to_persist)
     _notify_streamers = staticmethod(_internals.notify_streamers)
     _drain_pending = staticmethod(_internals.drain_pending)
     _build_capabilities = _internals.build_capabilities
@@ -214,11 +213,11 @@ class AgentRunner:
         """Shared pre-run setup for ``run()`` / ``run_stream()``.
 
         Returns:
-            A tuple of ``(session_id, history, original_history, needs_compaction, active_sp)``:
+            A tuple of ``(session_id, history, injected, needs_compaction, active_sp)``:
 
             - history: message list after context preparation and extension injection
-            - original_history: history after context preparation, before extension injection
-                (used to compute the turn delta)
+            - injected: extension-injected messages, captured by identity before
+                the Agent touches them (they are part of this turn's delta)
             - needs_compaction: whether context preparation flagged compaction as needed
             - active_sp: the system prompt to use for this turn (user-provided
                 or loaded from session storage)
@@ -278,7 +277,7 @@ class AgentRunner:
                 self._on_warning(f"Context prepare failed: {exc}", exc)
 
         # keep the original copy after context preparation so extension-injected
-        # messages (which happen after this point) are captured in the turn delta
+        # messages (which happen after this point) can be identified by identity
         original_history = list(history)
 
         # step 4: CONTEXT_PREPARE event (read-only — extension return values are ignored,
@@ -296,13 +295,21 @@ class AgentRunner:
         if "messages" in before_result:
             history = before_result["messages"]
 
+        # Record extension-injected messages NOW, while the Agent has not yet
+        # touched them: object identity is stable here, so id() reliably
+        # separates "originally loaded history" from "extension-injected".
+        # After agent.run() the SDK may copy messages and identity would be
+        # unreliable — hence the snapshot before the run, not a diff afterwards.
+        original_ids = {id(m) for m in original_history}
+        injected = [m for m in history if id(m) not in original_ids]
+
         # step 6: AGENT_START event (read-only — informs extensions the run has started)
         await self._fire(
             AgentRunnerEvent.AGENT_START,
             {"session_id": session_id, "prompt": prompt, "messages": history},
         )
 
-        return session_id, history, original_history, needs_compaction, active_sp
+        return session_id, history, injected, needs_compaction, active_sp
 
     async def _build_agent(
         self,
@@ -366,7 +373,7 @@ class AgentRunner:
     async def _finalize_run(
         self,
         session_id: str,
-        original_history: list[Any],
+        injected: list[Any],
         result: Any,
         output: str,
         needs_compaction: bool,
@@ -391,8 +398,10 @@ class AgentRunner:
         streamers = streamers if streamers is not None else []
         pending = pending if pending is not None else []
 
-        # compute this turn's delta (original history vs. full list produced by the Agent)
-        delta_messages = self._messages_to_persist(original_history, result.all_messages())
+        # this turn's delta: the SDK's tracked new messages (user prompt, tool
+        # results, model reply) plus the extension-injected messages recorded
+        # in _setup_run while their identity was still stable
+        delta_messages = list(result.new_messages()) + injected
         usage = result.usage
 
         # Agent-end events
@@ -460,7 +469,7 @@ class AgentRunner:
            → _finalize_run → extract run_end → return RunResult
         """
         # 1. setup (load history, context handling, extension injection)
-        session_id, history, original_history, needs_compaction, active_sp = await self._setup_run(
+        session_id, history, injected, needs_compaction, active_sp = await self._setup_run(
             prompt, session_id
         )
         # 2. build agent
@@ -472,7 +481,7 @@ class AgentRunner:
 
         # 4. finalize (save, compaction, events)
         async for event in self._finalize_run(
-            session_id, original_history, result, output, needs_compaction
+            session_id, injected, result, output, needs_compaction
         ):
             if event["type"] == "run_end":
                 return RunResult(
@@ -497,7 +506,7 @@ class AgentRunner:
         - The final event is still ``{"type": "run_end", ...}``.
         """
         # 1. setup (same as run())
-        session_id, history, original_history, needs_compaction, active_sp = await self._setup_run(
+        session_id, history, injected, needs_compaction, active_sp = await self._setup_run(
             prompt, session_id
         )
 
@@ -536,7 +545,7 @@ class AgentRunner:
         # 4. finalize — yield all post-agent events (including final run_end)
         async for event in self._finalize_run(
             session_id,
-            original_history,
+            injected,
             result,
             output,
             needs_compaction,
