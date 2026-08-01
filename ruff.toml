@@ -10,6 +10,7 @@ exclude = ["venv", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".git"]
 select = [
     "I",   # isort — import order (stdlib → third-party → first-party)
     "F",   # pyflakes — unused imports, undefined names, duplicate args, etc.
+    "D100",  # pydocstyle — module docstring required (anti-regression)
 ]
 
 [lint.isort]
