@@ -96,7 +96,7 @@ class Extension(Protocol):
         If the extension does not override this, ``run()`` and ``run_stream()``
         ignore it.
         """
-        if False:  # pragma: no cover
+        if False:  # pragma: no cover - unreachable protocol-generator default
             yield {}  # type: ignore[unreachable]
 
 
@@ -152,7 +152,7 @@ class MessageRole(StrEnum):
 #   ├── AGENT_END                # read-only: output + usage
 #   ├── SESSION_SAVE             # writable: modify delta_messages before persistence
 #   ├── COMPACTION_TRIGGER       # flagged by context preparation; cancellable
-#   │   └── COMPACTION_APPLIED
+#   │   └── COMPACTION_SCHEDULED
 #   └── SESSION_END
 #
 
@@ -174,7 +174,9 @@ class AgentRunnerEvent(StrEnum):
         AFTER_AGENT_RUN: The agent finished but messages are not yet saved.
         SESSION_SAVE: Messages are about to be persisted — modify delta.
         COMPACTION_TRIGGER: Compaction was flagged; extensions may cancel.
-        COMPACTION_APPLIED: Compaction completed or was cancelled.
+        COMPACTION_SCHEDULED: Compaction was scheduled (or cancelled by an
+            extension) — fired at scheduling time, before the background
+            task runs. There is no completion event.
     """
     SESSION_START = "session_start"
     SESSION_END = "session_end"
@@ -190,7 +192,7 @@ class AgentRunnerEvent(StrEnum):
     AFTER_AGENT_RUN = "after_agent_run"
     SESSION_SAVE = "session_save"
     COMPACTION_TRIGGER = "compaction_trigger"
-    COMPACTION_APPLIED = "compaction_applied"
+    COMPACTION_SCHEDULED = "compaction_applied"
 
 
 

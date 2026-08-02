@@ -283,7 +283,7 @@ Extensions can observe and modify the message list before it enters the model:
 |-------|--------|---------|
 | `SESSION_START` | Read | Session was created or reused |
 | `CONTEXT_PREPARE` | Read-only | Context preparation is complete (truncation applied). Extensions see the prepared state but cannot modify it here — use the next event for that. |
-| `BEFORE_AGENT_RUN` | **Writable** | The only point where extensions can inject or modify messages before they enter the model. Changes here are persisted. |
+| `BEFORE_AGENT_RUN` | **Writable** | The only point where extensions can inject or modify messages before they enter the model. **Newly injected messages are persisted**; in-place mutation of an already-loaded history object is not tracked. |
 | `AGENT_START` | Read | The final prompt and messages are locked; the model is about to be called |
 
 ---
@@ -304,7 +304,7 @@ persistence and compaction:
 | `AGENT_END` | Read | Final agent state. Identical payload to `AFTER_AGENT_RUN`; exists for symmetry with `AGENT_START`. |
 | `SESSION_SAVE` | **Writable** | Messages are about to be persisted. Extensions can modify the delta before it hits the database. |
 | `COMPACTION_TRIGGER` | **Cancellable** | Compaction was flagged. Any extension returning `{cancel: true}` blocks it. Uses *notify mode* — each extension votes independently on the same snapshot. |
-| `COMPACTION_APPLIED` | Read | Compaction completed (or was cancelled). The outcome is communicated. |
+| `COMPACTION_SCHEDULED` | Read | Compaction was scheduled (or cancelled by an extension vote). Fired at scheduling time — the background task may not have run yet; there is no completion event. |
 | `SESSION_END` | Read | The turn is complete. |
 
 **Tool policy patterns (approval, toggling, auditing).** The framework ships
@@ -335,10 +335,12 @@ headless auto-approve) and must not be guessed by the framework.
 
 ### Relationship with Context Management
 
-Messages injected by extensions through `BEFORE_AGENT_RUN` are **persisted** — they fall
-within the delta computation window. The `original_history` snapshot is captured after
-context preparation but before `BEFORE_AGENT_RUN`, so only extension-injected messages
-are persisted. The boundary between these two stages is intentional.
+Messages **injected** by extensions through `BEFORE_AGENT_RUN` are **persisted** —
+they fall within the delta computation window. The `original_history` snapshot is
+captured after context preparation but before `BEFORE_AGENT_RUN`, so only
+extension-injected messages (new objects, tracked by identity) are persisted;
+mutating an existing history message in place is not tracked. The boundary between
+these two stages is intentional.
 
 ---
 
@@ -487,3 +489,14 @@ sub-agents as plain tools. If a subagent execution layer is ever added,
 scope semantics and tool categorization should be designed from real
 requirements (how subagents are created, how tools are handed to them), not
 guessed in advance.
+
+### P4. Local/Postgres session backends are a drift risk (kept separate on purpose)
+
+The SQLite and PostgreSQL backends share ~300 lines of equivalent logic —
+schema, cutoff query, save/load, compaction — differing only in SQL dialect
+and driver. A shared base class was deliberately *not* extracted: the spec
+bans speculative abstraction, and the two drivers have enough surface (rows
+vs tuples, JSONB vs TEXT, pool vs connection) that a base class would need
+levers for every difference. The cost is that a change to one backend must
+be mirrored in the other. When editing either, diff against the other and
+keep the pair in sync.

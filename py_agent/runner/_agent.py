@@ -364,8 +364,7 @@ class AgentRunner:
         if self._skills is not None:
             capabilities.append(self._skills)
         capabilities.extend(await self._collect_capabilities())
-        if hooks not in capabilities:
-            capabilities.append(hooks)
+        capabilities.append(hooks)
 
         # model settings
         model_settings = ModelSettings(
@@ -471,8 +470,8 @@ class AgentRunner:
 
             # notify extensions of the compaction outcome (cancelled or triggered)
             applied_payload = {"session_id": session_id, "cancelled": bool(cancelled)}
-            await self._fire(AgentRunnerEvent.COMPACTION_APPLIED, applied_payload)
-            await self._notify_streamers(streamers, AgentRunnerEvent.COMPACTION_APPLIED, applied_payload, pending, on_warning=self._on_warning)
+            await self._fire(AgentRunnerEvent.COMPACTION_SCHEDULED, applied_payload)
+            await self._notify_streamers(streamers, AgentRunnerEvent.COMPACTION_SCHEDULED, applied_payload, pending, on_warning=self._on_warning)
             async for chunk in self._drain_pending(pending):
                 yield chunk
 
@@ -537,7 +536,7 @@ class AgentRunner:
                 )
 
         # should never reach here — _finalize_run always yields run_end
-        raise RuntimeError("run did not produce a run_end event")  # pragma: no cover
+        raise RuntimeError("run did not produce a run_end event")  # pragma: no cover - unreachable
 
     async def run_stream(
         self, prompt: str, *, session_id: str | None = None

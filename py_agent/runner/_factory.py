@@ -211,7 +211,7 @@ async def collect_tools(
                 )
             seen_server_names.add(server_name)
             wrapped: AbstractToolset = item
-            if getattr(self, "_prefix_toolset_names", True):
+            if self._prefix_toolset_names:
                 wrapped = PrefixedToolset(wrapped, prefix=server_name)
             toolsets.append(
                 _ResilientToolset(
