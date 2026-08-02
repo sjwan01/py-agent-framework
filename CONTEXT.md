@@ -500,3 +500,17 @@ vs tuples, JSONB vs TEXT, pool vs connection) that a base class would need
 levers for every difference. The cost is that a change to one backend must
 be mirrored in the other. When editing either, diff against the other and
 keep the pair in sync.
+
+### P5. Single-turn interruption mid-run — no recovery path (future work)
+
+A `run()` / `run_stream()` on a single-turn runner (`SingleTurnSessionManager`)
+can be interrupted mid-turn — process exit, request cancellation, timeout, a
+hung tool call. Nothing is persisted in single-turn mode, so the interrupted
+turn is lost entirely: streaming consumers see a half-delivered response and
+there is no way to resume. Multi-turn runners have the same mid-turn gap (the
+delta is only written in `_finalize_run`, after the agent finishes).
+
+To be solved later: a mid-run interruption solution for single-turn
+conversations — e.g. checkpointing partial state, cancellation-aware
+streaming, or a resume path. Not designed yet; the trigger, consequence, and
+open directions are recorded here so a later pass can pick it up.
