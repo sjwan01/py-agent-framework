@@ -58,11 +58,12 @@ def _validate_toolset_failure_handler(handler: ToolsetFailureHandler) -> None:
 class _ResilientToolset(AbstractToolset):
     """Wraps a toolset so catalog-load failures degrade instead of crashing the run.
 
-    pydantic-ai fails the whole run when any toolset's ``get_tools`` raises
-    (all-or-nothing). This wrapper turns that into partial degradation: the
-    failing server's tools are dropped (or replaced via a custom handler),
-    the rest of the toolsets keep working, and the next run retries
-    automatically because the SDK re-enters and re-lists every run.
+    pydantic-ai fails the whole run when any toolset's ``__aenter__`` (the
+    connection) or ``get_tools`` (the catalog) raises. This wrapper turns
+    that into partial degradation: the failing server's tools are dropped
+    (or replaced via a custom handler), the rest of the toolsets keep
+    working, and the next run retries automatically because the SDK
+    re-enters and re-lists every run.
 
     Args:
         inner: The wrapped ``AbstractToolset`` (e.g. ``PrefixedToolset``).
@@ -84,6 +85,8 @@ class _ResilientToolset(AbstractToolset):
         self._id = id
         self._on_warning = on_warning
         self._handler = handler
+        self._enter_failed = False
+        self._substitute: dict[str, Any] | None = None
 
     @property
     def id(self) -> str:
@@ -93,31 +96,47 @@ class _ResilientToolset(AbstractToolset):
         return cast(str, self._inner.id)
 
     async def __aenter__(self) -> Any:
-        """Enter the wrapped toolset."""
-        return await self._inner.__aenter__()
+        """Enter the wrapped toolset; on connection failure, degrade."""
+        self._enter_failed = False
+        self._substitute = None
+        try:
+            return await self._inner.__aenter__()
+        except Exception as exc:  # pragma: no cover - fail-open
+            self._enter_failed = True
+            self._resolve_failure(exc)
+            return self
 
     async def __aexit__(self, *args: Any) -> Any:
-        """Exit the wrapped toolset."""
+        """Exit the wrapped toolset; skip it when entry never succeeded."""
+        if self._enter_failed:
+            # the inner toolset was never entered; calling its __aexit__
+            # would raise ("called more times than __aenter__")
+            self._enter_failed = False
+            return None
         return await self._inner.__aexit__(*args)
 
     async def get_tools(self, ctx: Any) -> dict[str, Any]:
         """Load the catalog; on failure degrade (or delegate to the handler)."""
+        if self._enter_failed:
+            return self._substitute or {}
         try:
             return await self._inner.get_tools(ctx)
         except Exception as exc:  # pragma: no cover - fail-open
-            if self._handler is not None:
-                result = self._handler(cast(str, self._inner.id), exc)
-                if result is not None:
-                    return result
-            self._on_warning(
-                f"Toolset {self._inner.id} unavailable: {exc}",
-                exc,
-            )
-            return {}
+            self._resolve_failure(exc)
+            return self._substitute or {}
 
     async def call_tool(self, *args: Any, **kwargs: Any) -> Any:
         """Delegate tool execution to the wrapped toolset."""
         return await self._inner.call_tool(*args, **kwargs)
+
+    def _resolve_failure(self, exc: Exception) -> None:
+        """Delegate a failure to the custom handler or the default warn-and-drop."""
+        if self._handler is not None:
+            result = self._handler(self.id, exc)
+            if result is not None:
+                self._substitute = result
+                return
+        self._on_warning(f"Toolset {self.id} unavailable: {exc}", exc)
 
 
 # Lazy tool collection (called on the first run).
