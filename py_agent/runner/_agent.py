@@ -17,12 +17,15 @@ A full run lifecycle:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
-from typing import Any, Callable, cast
+from collections.abc import AsyncIterator, Callable, Sequence
+from typing import Any, cast
 
 from pydantic_ai import Agent
+from pydantic_ai import Tool as PydanticTool
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
+from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai_harness.skills import Skills
 
 from py_agent._compaction import HarnessSummarizer
 from py_agent._context import _prepare_context
@@ -140,8 +143,10 @@ class AgentRunner:
         thinking_enabled: bool = True,
         thinking_level: str | None = None,
         extensions: list[Any] | None = None,
-        tools: list[Any] | tuple[()] = (),
-        skills: Any = None,
+        tools: Sequence[
+            PydanticTool[Any] | AbstractToolset[Any] | Callable[..., Any]
+        ] = (),
+        skills: Skills[Any] | None = None,
         session_manager: SessionManager | None = None,
         context_config: ContextConfig | None = None,
         summarizer_config: SummarizerConfig | None = None,
