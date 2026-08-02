@@ -5,7 +5,7 @@ Zero implementation. Pure interface definitions.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Callable
 from enum import StrEnum
 from typing import Any, Protocol
 
@@ -63,16 +63,14 @@ class Extension(Protocol):
     """Protocol for user-provided extensions that hook into the agent lifecycle.
 
     Attributes:
-        register_tool_sources: Called at initialization; return a list of ``ToolSource`` objects discovered by this extension.
-        on_tool_event: Called during tool registration; receive ``ToolLifecycleEvent`` values such as ``TOOL_CONFLICT`` and return a dict to resolve.
+        register_tool_sources: Called at initialization; return a list of
+            pydantic-ai objects — ``Tool`` or ``AbstractToolset`` instances
+            (e.g. ``MCPToolset``) — that the agent should use.
         on_agent_runner_event: Called during a run; receive ``AgentRunnerEvent`` values and return a dict to modify event data.
         on_agent_runner_event_stream: Optional async generator for streaming extensions.
     """
 
-    async def register_tool_sources(self) -> list[ToolSource]: ...
-    async def on_tool_event(
-        self, event: str, data: dict[str, Any]
-    ) -> dict[str, Any] | None: ...
+    async def register_tool_sources(self) -> list[Any]: ...
     async def on_agent_runner_event(
         self, event: str, data: dict[str, Any]
     ) -> dict[str, Any] | None: ...
@@ -88,31 +86,21 @@ class Extension(Protocol):
             yield {}  # type: ignore[unreachable]
 
 
-# ToolSource
+ToolsetFailureHandler = Callable[
+    [str, Exception], dict[str, Any] | None
+]
+"""Handler for a toolset whose tool catalog failed to load.
 
-class ToolSource(ABC):
-    """Interface for discovering tools from a source.
+- Return a ``dict`` to substitute this server's tools for this run (an empty
+  dict drops them — partial degradation).
+- Return ``None`` for the default behavior (warn + drop).
+- Raise to fail the run (e.g. for a critical server).
 
-    Attributes:
-        discover: Return a list of Pydantic AI ``Tool`` objects.
-        source_type: Return the source kind: ``"local"``, ``"mcp"``, or ``"subagent"``.
-        source_id: Return a unique identifier string for this source.
-        scope: Visibility scope: ``"all"``, ``"main"``, or ``"subagent"``. Defaults to ``"all"``.
-    """
-
-    @abstractmethod
-    async def discover(self) -> list[Any]: ...
-    @property
-    @abstractmethod
-    def source_type(self) -> str: ...
-    @property
-    @abstractmethod
-    def source_id(self) -> str: ...
-    @property
-    def scope(self) -> str:
-        """Visibility scope for this source. Defaults to global ('all')."""
-        return "all"
-
+The internal logic is free (retry, alert, decide); the signature is fixed:
+``(toolset_id, exception)``. Any exception raised by this handler — a
+mistyped signature (``TypeError``) included — propagates to the caller and
+fails the run; write it correctly, it is intentionally not swallowed.
+"""
 
 # Data enums
 
@@ -132,15 +120,6 @@ class MessageRole(StrEnum):
 
 
 # Event enums
-#
-# ToolLifecycleEvent fires while AgentRunner initializes ToolLifecycle:
-#
-#   _ensure_tool_lifecycle()
-#   ├── register_tool_sources / add_source
-#   │   ├── TOOL_DISCOVERED   # tool source discovers a tool
-#   │   ├── TOOL_CONFLICT     # name collision between tools
-#   │   └── TOOL_REGISTERED   # finalized registration after conflict resolution
-#   └── TOOL_REMOVED          # tools eliminated by deduplication/conflict resolution
 #
 # AgentRunnerEvent fires during a single run() / run_stream() execution.
 #
@@ -162,21 +141,6 @@ class MessageRole(StrEnum):
 #   │   └── COMPACTION_APPLIED
 #   └── SESSION_END
 #
-
-class ToolLifecycleEvent(StrEnum):
-    """Events fired during tool registration.
-
-    Attributes:
-        TOOL_DISCOVERED: A tool source discovered a new tool.
-        TOOL_CONFLICT: A name collision occurred between tools.
-        TOOL_REGISTERED: A tool was accepted after conflict resolution.
-        TOOL_REMOVED: A tool was rejected by deduplication or conflict resolution.
-    """
-    TOOL_DISCOVERED = "tool_discovered"
-    TOOL_CONFLICT = "tool_conflict"
-    TOOL_REGISTERED = "tool_registered"
-    TOOL_REMOVED = "tool_removed"
-
 
 class AgentRunnerEvent(StrEnum):
     """Events fired during a single ``run()`` / ``run_stream()`` execution.
@@ -215,25 +179,11 @@ class AgentRunnerEvent(StrEnum):
     COMPACTION_APPLIED = "compaction_applied"
 
 
-# Event handler type
-
-ToolEventHandler = Callable[
-    [str, dict[str, Any]], Awaitable[dict[str, Any] | None]
-]
-"""Type alias for tool lifecycle event handlers.
-
-Handler signature: ``Callable[[str, dict], Awaitable[dict | None]]``.
-The string argument is the event name; the dict is event data. Returning a
-dict merges updates back into the event data.
-"""
-
 
 __all__ = [
     "SessionManager",
     "Extension",
-    "ToolSource",
     "MessageRole",
-    "ToolLifecycleEvent",
     "AgentRunnerEvent",
-    "ToolEventHandler",
+    "ToolsetFailureHandler",
 ]

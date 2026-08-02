@@ -1,72 +1,194 @@
 """Lifecycle and discovery for AgentRunner.
 
-This module contains AgentRunner's tool registration, compaction triggering,
+This module contains AgentRunner's tool collection, compaction triggering,
 and automatic extension discovery. Every function's first parameter ``self``
 is an ``AgentRunner`` instance.
 """
 from __future__ import annotations
 
-from typing import Any
+import inspect
+from typing import Any, cast
 
-from py_agent.tools import LocalToolSource, ToolLifecycle
-from py_agent.types import ToolLifecycleEvent
+from pydantic_ai import Tool as PydanticTool
+from pydantic_ai.toolsets import AbstractToolset
 
-# Lazy tool lifecycle initialization (called on the first run).
+from py_agent.types import ToolsetFailureHandler
 
-async def ensure_tool_lifecycle(self: Any) -> Any:
-    """Lazily initialize ``ToolLifecycle`` and register tools from all sources.
+
+def _validate_toolset_failure_handler(handler: ToolsetFailureHandler) -> None:
+    """Validate a ``toolset_failure`` handler signature eagerly.
+
+    Called at ``AgentRunner`` construction so a mistyped handler fails fast
+    with a clear message instead of a cryptic ``TypeError`` at runtime.
+    A handler must accept two positional arguments ``(toolset_id, exception)``.
+
+    Args:
+        handler: The handler to validate.
+
+    Raises:
+        TypeError: When the handler cannot accept the two required arguments.
+    """
+    try:
+        sig = inspect.signature(handler)
+    except (TypeError, ValueError):
+        # not introspectable (e.g. some builtins); let it surface at runtime
+        return
+
+    params = list(sig.parameters.values())
+    positional = [
+        p
+        for p in params
+        if p.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+    required = sum(p.default is inspect.Parameter.empty for p in positional)
+    accepts_two = varargs or (len(positional) >= 2 and required <= 2)
+    if not accepts_two:
+        raise TypeError(
+            "toolset_failure must be a callable accepting "
+            "(toolset_id: str, exception: Exception); "
+            f"got {handler} with signature {sig}"
+        )
+
+
+class _ResilientToolset(AbstractToolset):
+    """Wraps a toolset so catalog-load failures degrade instead of crashing the run.
+
+    pydantic-ai fails the whole run when any toolset's ``get_tools`` raises
+    (all-or-nothing). This wrapper turns that into partial degradation: the
+    failing server's tools are dropped (or replaced via a custom handler),
+    the rest of the toolsets keep working, and the next run retries
+    automatically because the SDK re-enters and re-lists every run.
+
+    Args:
+        inner: The wrapped ``AbstractToolset`` (e.g. ``MCPToolset``).
+        on_warning: Failure warning callback.
+        handler: Optional custom failure handler; ``None`` warns and drops.
+    """
+
+    def __init__(
+        self,
+        inner: AbstractToolset,
+        on_warning: Any,
+        handler: ToolsetFailureHandler | None = None,
+    ):
+        self._inner = inner
+        self._on_warning = on_warning
+        self._handler = handler
+
+    @property
+    def id(self) -> str:
+        """Delegate the toolset identifier to the wrapped toolset."""
+        return cast(str, self._inner.id)
+
+    async def __aenter__(self) -> Any:
+        """Enter the wrapped toolset."""
+        return await self._inner.__aenter__()
+
+    async def __aexit__(self, *args: Any) -> Any:
+        """Exit the wrapped toolset."""
+        return await self._inner.__aexit__(*args)
+
+    async def get_tools(self, ctx: Any) -> dict[str, Any]:
+        """Load the catalog; on failure degrade (or delegate to the handler)."""
+        try:
+            return await self._inner.get_tools(ctx)
+        except Exception as exc:  # pragma: no cover - fail-open
+            if self._handler is not None:
+                result = self._handler(cast(str, self._inner.id), exc)
+                if result is not None:
+                    return result
+            self._on_warning(
+                f"Toolset {self._inner.id} unavailable: {exc}",
+                exc,
+            )
+            return {}
+
+    async def call_tool(self, *args: Any, **kwargs: Any) -> Any:
+        """Delegate tool execution to the wrapped toolset."""
+        return await self._inner.call_tool(*args, **kwargs)
+
+
+# Lazy tool collection (called on the first run).
+
+async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
+    """Collect tools and toolsets from all sources (once, lazily).
 
     Called once during the first ``run()`` / ``run_stream()`` invocation and
-    cached afterwards. Registration order:
+    cached afterwards. Sources are the raw tools passed to the constructor
+    plus each extension's ``register_tool_sources()`` output. Every returned
+    item is split by type: ``AbstractToolset`` instances (e.g. ``MCPToolset``)
+    go to the Agent's ``toolsets`` (wrapped in ``_ResilientToolset`` for
+    partial degradation), ``Tool`` instances (or raw callables) to ``tools``.
 
-    1. Create the ``ToolLifecycle`` instance.
-    2. Subscribe extension ``on_tool_event`` handlers to all tool events.
-    3. Register raw tools passed to the constructor as a ``LocalToolSource``.
-    4. Call each extension's ``register_tool_sources()`` and register the
-       returned ``ToolSource`` instances (local, MCP, or subagent).
+    Name conflicts resolve by last-writer-wins: a tool registered later
+    replaces an earlier one with the same name.
+
+    Returns:
+        A tuple of ``(tools, toolsets)`` — pydantic-ai objects for the Agent.
     """
-    # already initialized, return immediately
-    if self._tool_lifecycle_initialized:
-        return self._tool_lifecycle
+    if self._tools_initialized:
+        return self._tools, self._toolsets
 
-    # first run: skip ToolLifecycle if there are no tools or extensions
-    if self._tool_lifecycle is None:
-        if self._raw_tools or self._extensions:
-            self._tool_lifecycle = ToolLifecycle(on_warning=self._on_warning)
+    tools: list[Any] = []
+    toolsets: list[Any] = []
+    by_name: dict[str, Any] = {}
+
+    def _add(item: Any) -> None:
+        """Split a collected item and apply last-writer-wins on names."""
+        if isinstance(item, AbstractToolset):
+            toolsets.append(
+                _ResilientToolset(
+                    item,
+                    self._on_warning,
+                    getattr(self, "_toolset_failure", None),
+                )
+            )
+            return
+        if not isinstance(item, PydanticTool):
+            item = PydanticTool(item)
+        name = item.name
+        if name in by_name:
+            tools[tools.index(by_name[name])] = item
         else:
-            self._tool_lifecycle_initialized = True
-            return None
+            tools.append(item)
+        by_name[name] = item
 
-    # subscribe extension handlers before registering so TOOL_CONFLICT etc. can be intercepted
-    for ext in self._extensions:
-        handler = getattr(ext, "on_tool_event", None)
-        if handler is None:
-            continue
-        for event in ToolLifecycleEvent:
-            self._tool_lifecycle.on(event, handler)
+    # raw tools passed to the constructor
+    for item in self._raw_tools:
+        _add(item)
 
-    # register raw tools passed to the constructor
-    if self._raw_tools:
-        await self._tool_lifecycle.add_source(LocalToolSource(self._raw_tools))
-
-    # let extensions expose their own tool sources
+    # let extensions expose their own tools
     for ext in self._extensions:
         register = getattr(ext, "register_tool_sources", None)
         if register is None:
             continue
         try:
-            sources = await register()
+            items = await register()
         except Exception as exc:  # pragma: no cover - fail-open
             self._on_warning(
                 f"Extension {type(ext).__name__} register_tool_sources failed: {exc}",
                 exc,
             )
             continue
-        for src in sources or []:
-            await self._tool_lifecycle.add_source(src)
+        for item in items or []:
+            try:
+                _add(item)
+            except Exception as exc:  # pragma: no cover - fail-open
+                self._on_warning(
+                    f"Invalid tool from {type(ext).__name__}: {exc}",
+                    exc,
+                )
+                continue
 
-    self._tool_lifecycle_initialized = True
-    return self._tool_lifecycle
+    self._tools = tools
+    self._toolsets = toolsets
+    self._tools_initialized = True
+    return tools, toolsets
 
 
 # Compaction trigger.

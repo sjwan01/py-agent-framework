@@ -36,6 +36,7 @@ from py_agent.session import SingleTurnSessionManager
 from py_agent.types import (
     AgentRunnerEvent,
     SessionManager,
+    ToolsetFailureHandler,
 )
 
 # Pydantic AI thinking depth levels. Invalid values are ignored and fall back.
@@ -72,7 +73,7 @@ class AgentRunner:
             init for tool registration and during each run for lifecycle hooks.
             Defaults to ``None``.
         tools: Raw callables or Pydantic AI ``Tool`` objects registered directly,
-            bypassing ``ToolLifecycle``. Defaults to ``()``.
+            bypassing the extension system. Defaults to ``()``.
         session_manager: Backend for multi-turn persistence. ``None`` uses
             ``SingleTurnSessionManager`` (every run is a fresh session). Pass
             ``LocalSessionManager(db_path=...)`` or
@@ -96,6 +97,11 @@ class AgentRunner:
             agent. Defaults to ``None``.
         on_warning: Callback for non-fatal errors (extension crashes,
             compaction failures, etc.). Defaults to a no-op.
+        toolset_failure: Custom handler for a toolset whose catalog failed to
+            load (e.g. an MCP server is down). Return a dict to substitute
+            tools, ``None`` for the default warn-and-drop, or raise to fail
+            the run. Defaults to ``None`` (warn and drop — partial
+            degradation, other servers keep working).
     """
 
     # Class-attribute bindings: wire submodule functions as instance methods.
@@ -112,10 +118,9 @@ class AgentRunner:
     _build_capabilities = _internals.build_capabilities
     _fire = _internals.fire
     _fire_notify = _internals.fire_notify
-    _get_tools = _internals.get_tools
 
     # --- from _factory.py (init / lifecycle / discovery) ---
-    _ensure_tool_lifecycle = _factory.ensure_tool_lifecycle
+    _collect_tools = _factory.collect_tools
     _trigger_compaction = _factory.trigger_compaction
 
     # Constructor
@@ -137,6 +142,7 @@ class AgentRunner:
         hooks: Any = None,
         capabilities: list[Any] | None = None,
         on_warning: Callable[[str, Exception | None], None] | None = None,
+        toolset_failure: ToolsetFailureHandler | None = None,
     ):
         """See the class docstring for full parameter documentation."""
         def _noop(msg: str, exc: Exception | None = None) -> None:
@@ -146,19 +152,22 @@ class AgentRunner:
         self._system_prompt = system_prompt
         self._thinking_enabled = thinking_enabled
         self._thinking_level = thinking_level
-        self._scope = "main"
 
         self._extensions = extensions or []
 
         self._raw_tools = list(tools)
-        self._tool_lifecycle = None
-        self._tool_lifecycle_initialized = False
+        self._tools: list[Any] = []
+        self._toolsets: list[Any] = []
+        self._tools_initialized = False
 
         self._session_manager = session_manager or SingleTurnSessionManager()
         is_multi = not isinstance(self._session_manager, SingleTurnSessionManager)
 
         # resolve on_warning early so the single-turn config warning can use it
         self._on_warning = on_warning or _noop
+        if toolset_failure is not None:
+            _factory._validate_toolset_failure_handler(toolset_failure)
+        self._toolset_failure = toolset_failure
 
         # context config: single-turn → never; multi-turn → from config or
         # sensible defaults
@@ -353,6 +362,9 @@ class AgentRunner:
                 level = None
             model_settings["thinking"] = cast(Any, level if level is not None else True)
 
+        # assemble the tools and toolsets from all sources (cached)
+        tools, toolsets = await self._collect_tools()
+
         # We pass the user's "system prompt" as Pydantic AI's `instructions` parameter.
         # `instructions` are attached to each model request as a separate field and are
         # NOT inserted into message_history. This matches our design: we rebuild Agent
@@ -365,7 +377,8 @@ class AgentRunner:
         return Agent(
             model=self._model,
             instructions=active_sp,
-            tools=await self._get_tools(),
+            tools=tools,
+            toolsets=toolsets or None,
             capabilities=capabilities or None,
             model_settings=model_settings,
         )
@@ -459,6 +472,17 @@ class AgentRunner:
         }
 
     # Public API
+
+    async def close(self) -> None:
+        """Release resources held by the runner.
+
+        Closes the session backend (e.g. the Postgres connection pool).
+        Toolset connections need no explicit handling — pydantic-ai enters
+        and exits every toolset on each run, so nothing persists across runs.
+        """
+        close = getattr(self._session_manager, "close", None)
+        if close is not None:
+            await close()
 
     async def run(self, prompt: str, *, session_id: str | None = None) -> RunResult:
         """Run one conversation turn and return a ``RunResult``.

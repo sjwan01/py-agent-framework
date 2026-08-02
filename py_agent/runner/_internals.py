@@ -128,17 +128,3 @@ async def fire_notify(
     return {cancel_key: cancelled}
 
 
-async def get_tools(self: Any) -> list[Any]:
-    """Return the tools the Agent should use for this run.
-
-    Prefers ``ToolLifecycle`` when extensions have registered tool sources;
-    falls back to the raw tools passed to the constructor.
-    """
-    lifecycle = await self._ensure_tool_lifecycle()
-    if lifecycle is not None:
-        tools: list[Any] = lifecycle.get_for_scope(self._scope)
-        return tools
-    raw_tools: list[Any] = self._raw_tools
-    return raw_tools
-
-
