@@ -10,7 +10,7 @@ import inspect
 from typing import Any, cast
 
 from pydantic_ai import Tool as PydanticTool
-from pydantic_ai.toolsets import AbstractToolset
+from pydantic_ai.toolsets import AbstractToolset, PrefixedToolset
 
 from py_agent.types import ToolsetFailureHandler
 
@@ -65,9 +65,11 @@ class _ResilientToolset(AbstractToolset):
     automatically because the SDK re-enters and re-lists every run.
 
     Args:
-        inner: The wrapped ``AbstractToolset`` (e.g. ``MCPToolset``).
+        inner: The wrapped ``AbstractToolset`` (e.g. ``PrefixedToolset``).
         on_warning: Failure warning callback.
         handler: Optional custom failure handler; ``None`` warns and drops.
+        id: Explicit server name; defaults to ``inner.id`` (which is ``None``
+            for ``PrefixedToolset``, so pass the original server name).
     """
 
     def __init__(
@@ -75,14 +77,19 @@ class _ResilientToolset(AbstractToolset):
         inner: AbstractToolset,
         on_warning: Any,
         handler: ToolsetFailureHandler | None = None,
+        *,
+        id: str | None = None,
     ):
         self._inner = inner
+        self._id = id
         self._on_warning = on_warning
         self._handler = handler
 
     @property
     def id(self) -> str:
-        """Delegate the toolset identifier to the wrapped toolset."""
+        """Return the explicit server name, falling back to ``inner.id``."""
+        if self._id is not None:
+            return self._id
         return cast(str, self._inner.id)
 
     async def __aenter__(self) -> Any:
@@ -125,8 +132,15 @@ async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
     go to the Agent's ``toolsets`` (wrapped in ``_ResilientToolset`` for
     partial degradation), ``Tool`` instances (or raw callables) to ``tools``.
 
-    Name conflicts resolve by last-writer-wins: a tool registered later
-    replaces an earlier one with the same name.
+    Name conflicts between tools from the same source resolve by
+    last-writer-wins (a tool registered later replaces an earlier one with
+    the same name). Every ``AbstractToolset`` must specify a server name
+    (``id``) and server names must be unique — both are configuration errors
+    that fail the run. Toolsets are wrapped in ``_ResilientToolset`` for
+    partial degradation and, when ``prefix_toolset_names`` is enabled,
+    prefixed with their server name (``{server}_{tool}``) so identically
+    named tools across servers never collide. Cross-source name conflicts
+    with prefixes disabled are reported by the SDK at assembly time.
 
     Returns:
         A tuple of ``(tools, toolsets)`` — pydantic-ai objects for the Agent.
@@ -137,15 +151,32 @@ async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
     tools: list[Any] = []
     toolsets: list[Any] = []
     by_name: dict[str, Any] = {}
+    seen_server_names: set[str] = set()
 
     def _add(item: Any) -> None:
-        """Split a collected item and apply last-writer-wins on names."""
+        """Split a collected item; enforce server names; apply prefixing."""
         if isinstance(item, AbstractToolset):
+            server_name = item.id
+            if server_name is None:
+                raise ValueError(
+                    f"Toolset {item!r} must specify a server name (id) to "
+                    "disambiguate tools across servers"
+                )
+            if server_name in seen_server_names:
+                raise ValueError(
+                    f"Duplicate toolset server name {server_name!r}; "
+                    "server names must be unique"
+                )
+            seen_server_names.add(server_name)
+            wrapped: AbstractToolset = item
+            if getattr(self, "_prefix_toolset_names", True):
+                wrapped = PrefixedToolset(wrapped, prefix=server_name)
             toolsets.append(
                 _ResilientToolset(
-                    item,
+                    wrapped,
                     self._on_warning,
                     getattr(self, "_toolset_failure", None),
+                    id=server_name,
                 )
             )
             return
@@ -176,6 +207,10 @@ async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
             )
             continue
         for item in items or []:
+            if isinstance(item, AbstractToolset):
+                # configuration errors (missing/duplicate server name) propagate
+                _add(item)
+                continue
             try:
                 _add(item)
             except Exception as exc:  # pragma: no cover - fail-open

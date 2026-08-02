@@ -102,6 +102,11 @@ class AgentRunner:
             tools, ``None`` for the default warn-and-drop, or raise to fail
             the run. Defaults to ``None`` (warn and drop — partial
             degradation, other servers keep working).
+        prefix_toolset_names: Prefix every toolset's tools with its server
+            name (``{server}_{tool}``) so identically named tools across
+            servers never collide. When disabled, cross-source name
+            conflicts are reported by pydantic-ai at assembly time.
+            Defaults to ``True``.
     """
 
     # Class-attribute bindings: wire submodule functions as instance methods.
@@ -143,6 +148,7 @@ class AgentRunner:
         capabilities: list[Any] | None = None,
         on_warning: Callable[[str, Exception | None], None] | None = None,
         toolset_failure: ToolsetFailureHandler | None = None,
+        prefix_toolset_names: bool = True,
     ):
         """See the class docstring for full parameter documentation."""
         def _noop(msg: str, exc: Exception | None = None) -> None:
@@ -168,6 +174,7 @@ class AgentRunner:
         if toolset_failure is not None:
             _factory._validate_toolset_failure_handler(toolset_failure)
         self._toolset_failure = toolset_failure
+        self._prefix_toolset_names = prefix_toolset_names
 
         # context config: single-turn → never; multi-turn → from config or
         # sensible defaults

@@ -235,7 +235,7 @@ Extensions declare their tools through one hook:
 |------|------|-----------------|
 | `register_tool_sources()` | Called once, before the first turn | Return a list of pydantic-ai objects — `Tool` instances (or raw callables) and `AbstractToolset` instances (e.g. `MCPToolset`) |
 
-The runner collects everything and splits by type: `AbstractToolset` goes to the Agent's `toolsets`, everything else to `tools`. Name conflicts resolve by last-writer-wins: a tool registered later replaces an earlier one with the same name (extensions can thus override any tool). No registration events are fired; runtime interception happens at `TOOL_CALL` (see Phase 3).
+The runner collects everything and splits by type: `AbstractToolset` goes to the Agent's `toolsets`, everything else to `tools`. Name conflicts between tools from the same source resolve by last-writer-wins (extensions can thus override any tool). Every toolset must specify a server name (`id`) and server names must be unique — missing/duplicate names fail the run at collection. Each toolset is wrapped in `_ResilientToolset` (a down server degrades instead of crashing the run, see SPEC-stateful-tool-management) and, by default (`prefix_toolset_names=True`), in `PrefixedToolset`: tools are exposed as `{server}_{tool}`, so identically named tools across servers never collide. With prefixing disabled, cross-source name conflicts are reported by pydantic-ai at assembly time. No registration events are fired; runtime interception happens at `TOOL_CALL` (see Phase 3).
 
 ---
 
