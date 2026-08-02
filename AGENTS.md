@@ -139,7 +139,6 @@ py_agent/
 ├── __init__.py           # public exports only (AgentRunner, configs)
 ├── types.py              # ABCs, Protocols, enums — zero implementation
 ├── models.py             # Pydantic data models
-├── tools.py              # ToolSource implementations + ToolLifecycle
 ├── _context.py           # _prepare_context (watermark truncation, pure function)
 ├── _compaction.py        # HarnessSummarizer wrapper
 ├── runner/               # Agent lifecycle orchestration
@@ -170,7 +169,6 @@ py_agent/
 
 4. **Separation of concerns:**
    - Data shapes → `models.py`
-   - Tool registration → `tools.py`
    - Context management → `_context.py`
    - Session I/O → `session/`
    - Orchestration → `runner/`
@@ -186,8 +184,7 @@ must live in exactly one of them — never scattered elsewhere.
 |-----------|--------------------------|
 | `ABC` (abstract base class) | `SessionManager` |
 | `Protocol` (structural interface) | `Extension` |
-| `StrEnum` / `Enum` | `AgentRunnerEvent`, `ToolLifecycleEvent`, `MessageRole` |
-| Type alias (`SomeName = Callable[[...], ...]`) | `ToolEventHandler` |
+| `StrEnum` / `Enum` | `AgentRunnerEvent`, `MessageRole` |
 
 Rules:
 - No implementation code. No method bodies, no logic, no imports of
@@ -248,7 +245,7 @@ the same ABC and are registered in `session/__init__.py`.
 
 ### Event-driven lifecycle
 
-Events are `StrEnum` values (`AgentRunnerEvent`, `ToolLifecycleEvent`).
+Events are `StrEnum` values (`AgentRunnerEvent`).
 Extensions subscribe via `Extension` Protocol methods. Two dispatch modes:
 
 - **Chain mode** (`_fire`): each extension sees the previous one's modifications.

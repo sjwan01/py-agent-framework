@@ -229,15 +229,13 @@ Extensions implement the `Extension` Protocol, which spans three distinct phases
 
 **Phase 1: Tool registration** (once per `AgentRunner` instance, lazily on first `run()`)
 
-Extensions discover and register their tools through two hooks:
+Extensions declare their tools through one hook:
 
 | Hook | When | Extension's role |
 |------|------|-----------------|
-| `register_tool_sources()` | Called once, before the first turn | Return `ToolSource` objects (local functions, MCP servers, sub-agents) that the framework will discover tools from |
-| `on_tool_event(event, data)` | Fires for each tool as it is discovered and registered | Observe or resolve conflicts. Receives `TOOL_DISCOVERED`, `TOOL_CONFLICT`, `TOOL_REGISTERED`, `TOOL_REMOVED` |
+| `register_tool_sources()` | Called once, before the first turn | Return a list of pydantic-ai objects — `Tool` instances (or raw callables) and `AbstractToolset` instances (e.g. `MCPToolset`) |
 
-Built-in default for `TOOL_CONFLICT`: local tools override MCP tools with the same name.
-Extensions can override this by returning a different resolution.
+The runner collects everything and splits by type: `AbstractToolset` goes to the Agent's `toolsets`, everything else to `tools`. Name conflicts resolve by last-writer-wins: a tool registered later replaces an earlier one with the same name (extensions can thus override any tool). No registration events are fired; runtime interception happens at `TOOL_CALL` (see Phase 3).
 
 ---
 
@@ -272,6 +270,23 @@ persistence and compaction:
 | `COMPACTION_TRIGGER` | **Cancellable** | Compaction was flagged. Any extension returning `{cancel: true}` blocks it. Uses *notify mode* — each extension votes independently on the same snapshot. |
 | `COMPACTION_APPLIED` | Read | Compaction completed (or was cancelled). The outcome is communicated. |
 | `SESSION_END` | Read | The turn is complete. |
+
+**Tool policy patterns (approval, toggling, auditing).** The framework ships
+no built-in tool policies. All of them are business logic and are implemented
+by extensions at `TOOL_CALL`:
+
+```python
+if event == AgentRunnerEvent.TOOL_CALL:
+    if not approved(data["tool_name"], data["args"]):
+        return {"block": True, "reason": "approval required"}   # approval
+    audit_log(data)                                                 # auditing
+    if disabled(data["tool_name"]):
+        return {"block": True}                                     # toggling
+    return {"args": sanitize(data["args"])}                       # argument rewriting
+```
+
+Approval flows are application-specific (CLI confirm, HTTP callback,
+headless auto-approve) and must not be guessed by the framework.
 
 ---
 
@@ -337,32 +352,21 @@ underlying SDK:
 
 | `MessageRole` | StrEnum | Type for the `role` column in custom `SessionManager` implementations |
 
-### `py_agent.tools` — tool source implementations
-
-| Name | Kind | Why the user needs it |
-|------|------|----------------------|
-| `LocalToolSource` | Class | Wrap Python functions as tools — the most common case |
-| `MCPServerSource` | Class | Wrap MCP server clients |
-| `SubagentToolSource` | Class | Wrap sub-agents or LangGraph graphs |
-
 ### `py_agent.types` — protocols, enums, and type aliases
 
 | Name | Kind | Why the user needs it |
 |------|------|----------------------|
 | `Extension` | Protocol | Implement custom extensions |
-| `ToolSource` | ABC | Implement custom tool sources |
 | `AgentRunnerEvent` | StrEnum | Match event names in `on_agent_runner_event` |
-| `ToolLifecycleEvent` | StrEnum | Match event names in `on_tool_event` |
-| `ToolEventHandler` | Type alias | Function signature for `on_tool_event` handlers |
+| `MessageRole` | StrEnum | Type for the `role` column in custom `SessionManager` implementations |
+| `ToolsetFailureHandler` | Type alias | Custom handling when a toolset's catalog fails to load (e.g. a down MCP server): return a dict to substitute tools, `None` for warn-and-drop, or raise to fail the run |
 
 ### Not Exported
 
 | Name | Why not |
 |------|---------|
 
-| `ToolLifecycle` | Managed internally by `AgentRunner`; users interact via `ToolSource` and events |
 | `HarnessSummarizer` | Compaction implementation detail; configured through `SummarizerConfig` |
-| `ContextManagerConfig` | Removed. `ContextConfig` is the sole context-management config model. Users pass `ContextConfig` directly. |
 
 ---
 
@@ -426,3 +430,12 @@ stays the single source of truth.
 **If ever built.** A bounded form: cache only the decoded message list and
 append per-turn deltas, with an explicit invalidation contract covering
 compaction and external writes. Not a general cache layer.
+
+### P3. Sub-agent scope and tool categories — revisit if a subagent layer is added
+
+The framework has no sub-agent execution path, so tool `scope` (main vs.
+subagent) and distinct sub-agent tool categories are absent: an agent sees
+sub-agents as plain tools. If a subagent execution layer is ever added,
+scope semantics and tool categorization should be designed from real
+requirements (how subagents are created, how tools are handed to them), not
+guessed in advance.
