@@ -56,6 +56,48 @@ def foo(items: list[Any]) -> dict[str, Any]: ...
 
 mypy strict mode rejects bare generics. Always provide type arguments.
 
+### `Any` is a deliberate boundary, not a default
+
+Type hints exist for two reasons: **the type checker** (catch real bugs) and
+**the reader** (the signature documents the contract). A precise type that
+expresses the contract beats `Any`; `Any` is only acceptable where the type
+is genuinely open. When you write `Any`, you should be able to name why.
+
+**Prefer the precise type when one exists:**
+
+```python
+# ✗  message lists are not "anything"
+def save(messages: list[Any]) -> None: ...
+
+# ✓  pydantic-ai has a real type
+from pydantic_ai.messages import ModelMessage
+def save(messages: list[ModelMessage]) -> None: ...
+```
+
+**Deliberate `Any` is fine — it falls into one of these buckets:**
+
+| Bucket | Example | Why it stays `Any` |
+|--------|---------|--------------------|
+| SDK callback params | `ctx: Any, call: Any, tool_def: Any` in hooks | pydantic-ai hook types are version-fragile; `Any` marks "SDK passthrough" |
+| Generic deps parameters | `Tool[Any]`, `AbstractToolset[Any]`, `RunContext[Any]` | the framework never cares about `AgentDepsT`; `[Any]` is correct instantiation |
+| External data boundaries | psycopg rows, event payload `dict[str, Any]`, JSONB dict-or-str | the data is genuinely dynamic at that interface |
+| SDK shims | `SimpleNamespace(usage=RunUsage())` | constructing an object the SDK's type system doesn't expose |
+
+**Signals that an `Any` is lazy rather than deliberate:**
+
+- `list[Any]` where a message/model type exists → use it (e.g. `ModelMessage`).
+- `self: Any` on class-attribute-bound methods → use `TYPE_CHECKING` +
+  the real class (no circular import at runtime, `from __future__ import
+  annotations` makes the annotation lazy).
+- A parameter with a known contract typed `Any` (e.g. callbacks, managers)
+  → give it a `Callable[...]` / `Protocol` / concrete type.
+- `Any` on an internal list or dict whose elements are all one type
+  → name the element type.
+
+If you cannot name the reason for an `Any`, find a more precise type. If you
+find a lazy `Any` during review, flag it — it hides real bugs and gives the
+reader no contract.
+
 ### mypy configuration (`mypy.ini`)
 
 ```ini
