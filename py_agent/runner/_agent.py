@@ -38,6 +38,7 @@ from py_agent.runner import _factory, _hooks, _internals
 from py_agent.session import SingleTurnSessionManager
 from py_agent.types import (
     AgentRunnerEvent,
+    Extension,
     SessionManager,
     ToolsetFailureHandler,
 )
@@ -142,7 +143,7 @@ class AgentRunner:
         system_prompt: str | None = None,
         thinking_enabled: bool = True,
         thinking_level: str | None = None,
-        extensions: list[Any] | None = None,
+        extensions: Sequence[Extension] | None = None,
         tools: Sequence[
             PydanticTool[Any] | AbstractToolset[Any] | Callable[..., Any]
         ] = (),

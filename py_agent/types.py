@@ -74,7 +74,14 @@ class Extension(Protocol):
         on_agent_runner_event_stream: Optional async generator for streaming extensions.
     """
 
-    async def register_capabilities(self) -> list[Any]: ...
+    async def register_capabilities(self) -> list[Any]:
+        """Optional hook: return Pydantic AI ``AbstractCapability`` instances.
+
+        Extensions that only observe events can omit this — the default
+        contributes nothing.
+        """
+        return []
+
     async def on_agent_runner_event(
         self, event: str, data: dict[str, Any]
     ) -> dict[str, Any] | None: ...
