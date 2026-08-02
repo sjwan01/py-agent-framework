@@ -17,6 +17,13 @@ from pydantic_ai.messages import ModelMessage
 class SessionManager(ABC):
     """Interface that all session backends must implement.
 
+    Implement this to build a custom persistence backend; the three built-in
+    backends (`SingleTurnSessionManager`, `LocalSessionManager`,
+    `PostgresSessionManager`) are working references. Messages are Pydantic AI
+    ``ModelMessage`` objects (use ``TypeAdapter(ModelMessage)`` to
+    serialize/deserialize them). ``AgentRunner`` calls these methods per turn;
+    the contract for each is documented below.
+
     Attributes:
         create_session: Create a new session and return its id.
         load_history: Load messages for a session, respecting ``protect_turns`` for compaction-aware boundaries.
@@ -31,33 +38,110 @@ class SessionManager(ABC):
     @abstractmethod
     async def create_session(
         self, *, metadata: dict[str, Any] | None = None
-    ) -> str: ...
+    ) -> str:
+        """Create a new session and return its identifier.
+
+        Args:
+            metadata: Arbitrary session metadata (e.g. language, tenant),
+                stored for later inspection. Defaults to ``None``.
+
+        Returns:
+            A unique session id; pass it to ``AgentRunner.run(session_id=...)``
+            to continue the session.
+        """
+
     @abstractmethod
     async def load_history(
         self, session_id: str, *, protect_turns: int = 0
-    ) -> list[ModelMessage]: ...
+    ) -> list[ModelMessage]:
+        """Load the session's messages for the next turn.
+
+        A compaction summary (if any) replaces the messages it covers, so
+        the returned list is the effective history the agent sees. Messages
+        are ordered oldest to newest.
+
+        Args:
+            session_id: The session to load.
+            protect_turns: Number of most recent user turns that must stay
+                intact (not covered by a compaction summary). ``0`` means
+                the latest compaction applies unconditionally.
+
+        Returns:
+            The effective message history.
+        """
+
     @abstractmethod
     async def save_messages(
         self, session_id: str, messages: list[ModelMessage]
-    ) -> None: ...
+    ) -> None:
+        """Append a batch of messages (this turn's delta) to the session.
+
+        ``message_seq`` values continue from the current maximum + 1. The
+        ``role`` column (see ``MessageRole``) is derived by the backend from
+        each message and is what ``load_history``'s ``protect_turns`` relies
+        on.
+
+        Args:
+            session_id: The session to append to.
+            messages: The messages to persist, in order.
+        """
+
     @abstractmethod
     async def apply_compaction(
         self, session_id: str, summary: str, boundary_seq: int
-    ) -> None: ...
+    ) -> None:
+        """Record a compaction summary for the session.
+
+        Write-only: this never deletes messages. ``load_history`` replaces
+        messages at or before ``boundary_seq`` with the summary (only when
+        the boundary falls before the protected region).
+
+        Args:
+            session_id: The session being compacted.
+            summary: The generated summary text.
+            boundary_seq: The message sequence boundary — messages up to and
+                including this seq are summarized/overwritten on load.
+        """
+
     @abstractmethod
-    async def get_max_message_seq(self, session_id: str) -> int: ...
+    async def get_max_message_seq(self, session_id: str) -> int:
+        """Return the highest ``message_seq`` for the session, or ``-1`` if empty.
+
+        This is the raw maximum, unaffected by the compactions table — it
+        serves as the boundary for the next compaction.
+        """
+
     @abstractmethod
     async def ensure_session(
         self, session_id: str, *, metadata: dict[str, Any] | None = None
-    ) -> str: ...
+    ) -> str:
+        """Ensure the session row exists, creating it if necessary.
+
+        Called when resuming an existing session id.
+
+        Returns:
+            The session id (as passed in).
+        """
+
     @abstractmethod
     async def save_system_prompt(
         self, session_id: str, system_prompt: str
-    ) -> None: ...
+    ) -> None:
+        """Persist the session's system prompt (latest write wins).
+
+        Stored prompts let a prompt-less ``AgentRunner`` reconnect to a
+        session without re-supplying the prompt.
+        """
+
     @abstractmethod
     async def load_system_prompt(
         self, session_id: str
-    ) -> str | None: ...
+    ) -> str | None:
+        """Load the most recently saved system prompt for the session, if any.
+
+        Returns:
+            The stored prompt, or ``None`` if none was saved.
+        """
 
 
 # Extension Protocol
@@ -69,6 +153,28 @@ class Extension(Protocol):
     also register SDK capabilities (the ``register_capabilities`` hook is
     optional) — tools and skills are declared on ``AgentRunner`` itself, not
     through extensions.
+
+    A minimal lifecycle extension (e.g. auditing tool calls)::
+
+        class Audit(Extension):
+            async def on_agent_runner_event(self, event, data):
+                if event == AgentRunnerEvent.TOOL_CALL:
+                    audit_log(data["tool_name"], data["args"])
+                return None   # no modification
+
+    To intercept (not just observe), return a dict that patches ``data``:
+
+    - ``TOOL_CALL``: ``{"block": true, "reason": ...}`` blocks the tool;
+      ``{"args": {...}}`` rewrites its arguments before execution.
+    - ``TOOL_RESULT``: ``{"content": ...}`` rewrites the tool's return value.
+    - ``BEFORE_AGENT_RUN`` / ``SESSION_SAVE``: ``{"messages": ...}`` /
+      ``{"delta_messages": ...}`` replace what is sent / persisted.
+    - ``COMPACTION_TRIGGER``: ``{"cancel": true}`` vetoes compaction.
+
+    Returning ``None`` leaves the event unchanged. See ``AgentRunnerEvent``
+    for every event and its payload. Use ``register_capabilities`` only to
+    add SDK capabilities (e.g. ``Skills``, ``PrefixTools``) — declare tools
+    and skills on ``AgentRunner`` instead.
 
     Attributes:
         register_capabilities: Optional; return Pydantic AI ``AbstractCapability``
@@ -158,6 +264,26 @@ class MessageRole(StrEnum):
 
 class AgentRunnerEvent(StrEnum):
     """Events fired during a single ``run()`` / ``run_stream()`` execution.
+
+    Extensions receive these in ``on_agent_runner_event(event, data)``.
+    Each event's ``data`` payload (all values are plain dicts):
+
+    - ``SESSION_START`` / ``SESSION_END``: ``{"session_id": str}``
+    - ``CONTEXT_PREPARE``: ``{"session_id": str, "messages": list, "needs_compaction": bool}``
+    - ``BEFORE_AGENT_RUN``: ``{"session_id": str, "messages": list}`` — writable:
+      replace ``messages`` to inject. Newly injected messages are persisted.
+    - ``AGENT_START``: ``{"session_id": str, "prompt": str, "messages": list}``
+    - ``AGENT_END`` / ``AFTER_AGENT_RUN``: ``{"session_id": str, "output": str, "usage": ...}``
+    - ``TOKEN_STREAM``: ``{"session_id": str, "data": {"chunk": str}}`` (run_stream only)
+    - ``TOOL_START`` / ``TOOL_END``: ``{"session_id": str, "name": str, "data": {"args" | "result": ...}}``
+    - ``TOOL_CALL``: ``{"session_id": str, "tool_name": str, "tool_call_id": str, "args": dict}``
+      — writable: ``{"block": true}`` blocks, ``{"args": ...}`` rewrites arguments.
+    - ``TOOL_RESULT``: ``{"session_id": str, "tool_name": str, "tool_call_id": str, "content": ..., "is_error": bool}``
+      — writable: ``{"content": ...}`` rewrites the result.
+    - ``SESSION_SAVE``: ``{"session_id": str, "delta_messages": list}`` — writable:
+      replace ``delta_messages`` before persistence.
+    - ``COMPACTION_TRIGGER``: ``{"session_id": str}`` — return ``{"cancel": true}`` to veto.
+    - ``COMPACTION_SCHEDULED``: ``{"session_id": str, "cancelled": bool}``
 
     Attributes:
         SESSION_START: A new session was created or reused.

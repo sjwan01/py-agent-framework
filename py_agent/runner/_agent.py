@@ -100,9 +100,6 @@ class AgentRunner:
             Defaults to ``5``.
         parallel_tool_calls: Allow the model to issue multiple tool calls
             concurrently. Defaults to ``False``.
-        hooks: Removed — capabilities are assembled by the framework from
-            ``skills`` and extensions' ``register_capabilities``.
-        capabilities: Removed — see ``hooks``.
         on_warning: Callback for non-fatal errors (extension crashes,
             compaction failures, etc.). Defaults to a no-op.
         toolset_failure: Custom handler for a toolset whose connection or
@@ -511,6 +508,21 @@ class AgentRunner:
 
            _setup_run → _build_agent → agent.run (direct result)
            → _finalize_run → extract run_end → return RunResult
+
+        Args:
+            prompt: The user's message for this turn.
+            session_id: Identifier of an existing session to continue.
+                ``None`` starts a fresh session (required for multi-turn
+                persistence: pass the previous ``RunResult.session_id`` to
+                continue the conversation).
+
+        Returns:
+            A ``RunResult`` with the final output, the session id, this
+            turn's new messages, and usage stats.
+
+        Raises:
+            ValueError: When no system prompt is available — the caller
+                must pass one, or the session must have a stored prompt.
         """
         # 1. setup (load history, context handling, extension injection)
         session_id, history, injected, needs_compaction, active_sp = await self._setup_run(
@@ -548,6 +560,16 @@ class AgentRunner:
         - The Agent is built with ``streamers`` so all extensions receive runtime events.
         - Token chunks, tool calls, and lifecycle events are yielded as they happen.
         - The final event is still ``{"type": "run_end", ...}``.
+
+        Args:
+            prompt: The user's message for this turn.
+            session_id: Same reconnection semantics as ``run()`` — ``None``
+                starts a fresh session, an existing id continues it.
+
+        Yields:
+            Event dicts: lifecycle events (``session_start`` … ``session_end``),
+            tool events, and token chunks, ending with ``run_end``. See
+            ``AgentRunnerEvent`` for the event names.
         """
         # 1. setup (same as run())
         session_id, history, injected, needs_compaction, active_sp = await self._setup_run(
