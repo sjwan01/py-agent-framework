@@ -8,9 +8,12 @@ These functions are bound as instance methods on the ``AgentRunner`` class in
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from py_agent.types import Extension
+
+if TYPE_CHECKING:
+    from py_agent.runner import AgentRunner
 
 
 async def notify_streamers(
@@ -59,7 +62,7 @@ async def drain_pending(
 
 
 async def fire(
-    self: Any, event: str, data: dict[str, Any]
+    self: AgentRunner, event: str, data: dict[str, Any]
 ) -> dict[str, Any]:
     """Dispatch an event to all extensions in chain mode.
 
@@ -85,7 +88,7 @@ async def fire(
 
 
 async def fire_notify(
-    self: Any,
+    self: AgentRunner,
     event: str,
     data: dict[str, Any],
     *,

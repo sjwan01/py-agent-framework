@@ -19,15 +19,18 @@ The three hook stages (in execution order):
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai.capabilities import Hooks
 
 from py_agent.types import AgentRunnerEvent, Extension
 
+if TYPE_CHECKING:
+    from py_agent.runner import AgentRunner
+
 
 def build_hooks(
-    self: Any,
+    self: AgentRunner,
     session_id: str,
     *,
     pending: list[dict[str, Any]] | None = None,

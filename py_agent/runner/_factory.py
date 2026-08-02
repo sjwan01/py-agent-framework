@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
+from pydantic_ai import RunContext
 from pydantic_ai import Tool as PydanticTool
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.toolsets import AbstractToolset, PrefixedToolset
+from pydantic_ai.toolsets import AbstractToolset, PrefixedToolset, ToolsetTool
 
 from py_agent.types import ToolsetFailureHandler
+
+if TYPE_CHECKING:
+    from py_agent.runner import AgentRunner
 
 
 def _validate_toolset_failure_handler(handler: ToolsetFailureHandler) -> None:
@@ -57,7 +61,7 @@ def _validate_toolset_failure_handler(handler: ToolsetFailureHandler) -> None:
         )
 
 
-class _ResilientToolset(AbstractToolset):
+class _ResilientToolset(AbstractToolset[Any]):
     """Wraps a toolset so catalog-load failures degrade instead of crashing the run.
 
     pydantic-ai fails the whole run when any toolset's ``__aenter__`` (the
@@ -77,7 +81,7 @@ class _ResilientToolset(AbstractToolset):
 
     def __init__(
         self,
-        inner: AbstractToolset,
+        inner: AbstractToolset[Any],
         on_warning: Callable[[str, Exception | None], None],
         handler: ToolsetFailureHandler | None = None,
         *,
@@ -88,7 +92,7 @@ class _ResilientToolset(AbstractToolset):
         self._on_warning = on_warning
         self._handler = handler
         self._enter_failed = False
-        self._substitute: dict[str, Any] | None = None
+        self._substitute: dict[str, ToolsetTool[Any]] | None = None
 
     @property
     def id(self) -> str:
@@ -122,7 +126,9 @@ class _ResilientToolset(AbstractToolset):
             self._on_warning(f"Toolset {self.id} exit failed: {exc}", exc)
             return None
 
-    async def get_tools(self, ctx: Any) -> dict[str, Any]:
+    async def get_tools(
+        self, ctx: RunContext[Any],
+    ) -> dict[str, ToolsetTool[Any]]:
         """Load the catalog; on failure degrade (or delegate to the handler)."""
         if self._enter_failed:
             return self._substitute or {}
@@ -132,9 +138,15 @@ class _ResilientToolset(AbstractToolset):
             self._resolve_failure(exc)
             return self._substitute or {}
 
-    async def call_tool(self, *args: Any, **kwargs: Any) -> Any:
+    async def call_tool(
+        self,
+        name: str,
+        tool_args: dict[str, Any],
+        ctx: RunContext[Any],
+        tool: ToolsetTool[Any],
+    ) -> Any:
         """Delegate tool execution to the wrapped toolset."""
-        return await self._inner.call_tool(*args, **kwargs)
+        return await self._inner.call_tool(name, tool_args, ctx, tool)
 
     def _resolve_failure(self, exc: Exception) -> None:
         """Delegate a failure to the custom handler or the default warn-and-drop."""
@@ -149,7 +161,7 @@ class _ResilientToolset(AbstractToolset):
 # Lazy tool collection (called on the first run).
 
 async def collect_tools(
-    self: Any,
+    self: AgentRunner,
 ) -> tuple[list[PydanticTool[Any]], list[AbstractToolset[Any]]]:
     """Collect tools and toolsets from the constructor's ``tools`` parameter.
 
@@ -230,7 +242,7 @@ async def collect_tools(
 
 
 async def collect_capabilities(
-    self: Any,
+    self: AgentRunner,
 ) -> list[AbstractCapability[Any]]:
     """Collect capabilities registered by extensions (once, lazily).
 
@@ -243,7 +255,7 @@ async def collect_capabilities(
         A list of capabilities for the Agent, in extension order.
     """
     if self._capabilities_initialized:
-        return list(cast(list[AbstractCapability[Any]], self._collected_capabilities))
+        return list(self._collected_capabilities)
 
     capabilities: list[AbstractCapability[Any]] = []
     for ext in self._extensions:
@@ -267,7 +279,7 @@ async def collect_capabilities(
 
 # Compaction trigger.
 
-async def trigger_compaction(self: Any, session_id: str) -> None:
+async def trigger_compaction(self: AgentRunner, session_id: str) -> None:
     """Asynchronously compact the history for the current session.
 
     Triggered from ``_finalize_run`` via ``asyncio.create_task`` so it does not
