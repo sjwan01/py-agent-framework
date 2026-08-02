@@ -248,6 +248,31 @@ tools across servers never collide. With prefixing disabled, cross-source
 name conflicts are reported by pydantic-ai at assembly time. No registration
 events are fired; runtime interception happens at `TOOL_CALL` (see Phase 3).
 
+**Skills behavior (verified against pydantic-ai source).** A `Skills`
+instance is a deferred capability: the model sees only each skill's name +
+description (a catalog rendered into the request prefix every turn —
+deliberately including already-loaded skills, to keep the provider's
+prompt-cache prefix stable), and loads the full SKILL.md body on demand via
+the `load_capability` tool. The full body lands in message history as a
+`LoadCapabilityReturnPart` (a `ToolReturnPart` subclass) — never in the
+system prompt, because `CombinedCapability.get_instructions` skips deferred
+capabilities regardless of load state. Consequences:
+
+- **Full bodies are ordinary history messages**: persisted with the delta,
+  counted in context estimation, subject to compaction like any other
+  message. Compaction dropping a loaded skill's body is natural forgetting —
+  the catalog still lists the skill, so the model can reload it.
+- **Truncation skips skill bodies by coincidence**: the truncator matches
+  `type(part) is ToolReturnPart` exactly, which excludes subclasses, so
+  skill bodies are never truncated until compacted. Preserve this if the
+  truncation logic changes.
+- **Catalog cost scales with library size and is the same class of cost as
+  tool metadata**: every tool's name/description/parameters schema and every
+  skill's name/description are re-exposed to the model each turn. This is a
+  scale trade-off for the application (how many servers/skills to expose),
+  not something the framework special-cases — pydantic-ai's native tool
+  search is the on-demand counterpart for tools.
+
 ---
 
 **Phase 2: Pre-agent** (every turn, before the model runs)
