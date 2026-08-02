@@ -56,18 +56,6 @@ async def drain_pending(
         yield pending.pop(0)
 
 
-def build_capabilities(self: Any) -> list[Any]:
-    """Assemble the capabilities list passed to the Pydantic AI Agent.
-
-    User-provided capabilities come first; framework hooks are appended by the
-    caller.
-    """
-    capabilities = list(self._capabilities)
-    if self._hooks is not None:
-        capabilities.append(self._hooks)
-    return capabilities
-
-
 async def fire(
     self: Any, event: str, data: dict[str, Any]
 ) -> dict[str, Any]:

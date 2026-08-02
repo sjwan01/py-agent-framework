@@ -69,11 +69,14 @@ class AgentRunner:
         thinking_level: Thinking depth (``"minimal"``, ``"low"``, ``"medium"``,
             ``"high"``, ``"xhigh"``). Invalid values are ignored with a warning.
             Defaults to ``None`` (model default).
-        extensions: Objects implementing the ``Extension`` protocol, called at
-            init for tool registration and during each run for lifecycle hooks.
-            Defaults to ``None``.
-        tools: Raw callables or Pydantic AI ``Tool`` objects registered directly,
-            bypassing the extension system. Defaults to ``()``.
+        extensions: Objects implementing the ``Extension`` protocol — they
+            observe and intercept lifecycle events and may register SDK
+            capabilities. Defaults to ``None``.
+        tools: Raw callables or Pydantic AI ``Tool`` objects registered directly.
+            Defaults to ``()``.
+        skills: A Pydantic AI harness ``Skills`` instance (a skill library)
+            made available to the model for on-demand loading. Defaults to
+            ``None`` (no skills).
         session_manager: Backend for multi-turn persistence. ``None`` uses
             ``SingleTurnSessionManager`` (every run is a fresh session). Pass
             ``LocalSessionManager(db_path=...)`` or
@@ -91,10 +94,9 @@ class AgentRunner:
             Defaults to ``5``.
         parallel_tool_calls: Allow the model to issue multiple tool calls
             concurrently. Defaults to ``False``.
-        hooks: A Pydantic AI ``Hooks`` instance (or compatible capability)
-            appended to the agent's capabilities list. Defaults to ``None``.
-        capabilities: Additional Pydantic AI capabilities injected into the
-            agent. Defaults to ``None``.
+        hooks: Removed — capabilities are assembled by the framework from
+            ``skills`` and extensions' ``register_capabilities``.
+        capabilities: Removed — see ``hooks``.
         on_warning: Callback for non-fatal errors (extension crashes,
             compaction failures, etc.). Defaults to a no-op.
         toolset_failure: Custom handler for a toolset whose connection or
@@ -120,12 +122,12 @@ class AgentRunner:
     _build_hooks = _hooks.build_hooks
     _notify_streamers = staticmethod(_internals.notify_streamers)
     _drain_pending = staticmethod(_internals.drain_pending)
-    _build_capabilities = _internals.build_capabilities
     _fire = _internals.fire
     _fire_notify = _internals.fire_notify
 
     # --- from _factory.py (init / lifecycle / discovery) ---
     _collect_tools = _factory.collect_tools
+    _collect_capabilities = _factory.collect_capabilities
     _trigger_compaction = _factory.trigger_compaction
 
     # Constructor
@@ -139,13 +141,12 @@ class AgentRunner:
         thinking_level: str | None = None,
         extensions: list[Any] | None = None,
         tools: list[Any] | tuple[()] = (),
+        skills: Any = None,
         session_manager: SessionManager | None = None,
         context_config: ContextConfig | None = None,
         summarizer_config: SummarizerConfig | None = None,
         max_tool_calls_per_turn: int = 5,
         parallel_tool_calls: bool = False,
-        hooks: Any = None,
-        capabilities: list[Any] | None = None,
         on_warning: Callable[[str, Exception | None], None] | None = None,
         toolset_failure: ToolsetFailureHandler | None = None,
         prefix_toolset_names: bool = True,
@@ -165,6 +166,7 @@ class AgentRunner:
         self._tools: list[Any] = []
         self._toolsets: list[Any] = []
         self._tools_initialized = False
+        self._skills = skills
 
         self._session_manager = session_manager or SingleTurnSessionManager()
         is_multi = not isinstance(self._session_manager, SingleTurnSessionManager)
@@ -216,8 +218,8 @@ class AgentRunner:
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
         self._parallel_tool_calls = parallel_tool_calls
 
-        self._hooks = hooks
-        self._capabilities = capabilities or []
+        self._collected_capabilities: list[Any] = []
+        self._capabilities_initialized = False
 
         self._compaction_pending: set[str] = set()
 
@@ -348,8 +350,12 @@ class AgentRunner:
         # build hooks (intercept logic before/during/after tool execution)
         hooks = self._build_hooks(session_id, pending=pending, streamers=streamers)
 
-        # assemble the capabilities list
-        capabilities = self._build_capabilities()
+        # assemble the capabilities list: skills (constructor) first, then
+        # extension-registered capabilities, then the framework's tool hooks
+        capabilities: list[Any] = []
+        if self._skills is not None:
+            capabilities.append(self._skills)
+        capabilities.extend(await self._collect_capabilities())
         if hooks not in capabilities:
             capabilities.append(hooks)
 

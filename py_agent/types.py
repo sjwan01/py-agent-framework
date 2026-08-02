@@ -62,15 +62,19 @@ class SessionManager(ABC):
 class Extension(Protocol):
     """Protocol for user-provided extensions that hook into the agent lifecycle.
 
+    Extensions own the lifecycle: they observe and intercept events. They may
+    also register SDK capabilities (the ``register_capabilities`` hook is
+    optional) — tools and skills are declared on ``AgentRunner`` itself, not
+    through extensions.
+
     Attributes:
-        register_tool_sources: Called at initialization; return a list of
-            pydantic-ai objects — ``Tool`` or ``AbstractToolset`` instances
-            (e.g. ``MCPToolset``) — that the agent should use.
+        register_capabilities: Optional; return Pydantic AI ``AbstractCapability``
+            instances (e.g. ``Skills``, ``PrefixTools``) the agent should use.
         on_agent_runner_event: Called during a run; receive ``AgentRunnerEvent`` values and return a dict to modify event data.
         on_agent_runner_event_stream: Optional async generator for streaming extensions.
     """
 
-    async def register_tool_sources(self) -> list[Any]: ...
+    async def register_capabilities(self) -> list[Any]: ...
     async def on_agent_runner_event(
         self, event: str, data: dict[str, Any]
     ) -> dict[str, Any] | None: ...

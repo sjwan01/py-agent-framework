@@ -147,24 +147,24 @@ class _ResilientToolset(AbstractToolset):
 # Lazy tool collection (called on the first run).
 
 async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
-    """Collect tools and toolsets from all sources (once, lazily).
+    """Collect tools and toolsets from the constructor's ``tools`` parameter.
 
     Called once during the first ``run()`` / ``run_stream()`` invocation and
-    cached afterwards. Sources are the raw tools passed to the constructor
-    plus each extension's ``register_tool_sources()`` output. Every returned
-    item is split by type: ``AbstractToolset`` instances (e.g. ``MCPToolset``)
-    go to the Agent's ``toolsets`` (wrapped in ``_ResilientToolset`` for
-    partial degradation), ``Tool`` instances (or raw callables) to ``tools``.
+    cached afterwards. Tools are declared on ``AgentRunner`` (the only
+    registration path — extensions do not inject tools). Every item is split
+    by type: ``AbstractToolset`` instances (e.g. ``MCPToolset``) go to the
+    Agent's ``toolsets`` (wrapped in ``_ResilientToolset`` for partial
+    degradation), ``Tool`` instances (or raw callables) to ``tools``.
 
-    Name conflicts between tools from the same source resolve by
-    last-writer-wins (a tool registered later replaces an earlier one with
-    the same name). Every ``AbstractToolset`` must specify a server name
-    (``id``) and server names must be unique — both are configuration errors
-    that fail the run. Toolsets are wrapped in ``_ResilientToolset`` for
-    partial degradation and, when ``prefix_toolset_names`` is enabled,
-    prefixed with their server name (``{server}_{tool}``) so identically
-    named tools across servers never collide. Cross-source name conflicts
-    with prefixes disabled are reported by the SDK at assembly time.
+    Name conflicts between tools resolve by last-writer-wins (a tool later
+    in the list replaces an earlier one with the same name). Every
+    ``AbstractToolset`` must specify a server name (``id``) and server names
+    must be unique — both are configuration errors that fail the run.
+    Toolsets are wrapped in ``_ResilientToolset`` for partial degradation
+    and, when ``prefix_toolset_names`` is enabled, prefixed with their
+    server name (``{server}_{tool}``) so identically named tools across
+    servers never collide. Cross-source name conflicts with prefixes
+    disabled are reported by the SDK at assembly time.
 
     Returns:
         A tuple of ``(tools, toolsets)`` — pydantic-ai objects for the Agent.
@@ -213,41 +213,48 @@ async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
             tools.append(item)
         by_name[name] = item
 
-    # raw tools passed to the constructor
+    # tools come only from the constructor parameter
     for item in self._raw_tools:
         _add(item)
 
-    # let extensions expose their own tools
+    self._tools = tools
+    self._toolsets = toolsets
+    self._tools_initialized = True
+    return tools, toolsets
+
+
+async def collect_capabilities(self: Any) -> list[Any]:
+    """Collect capabilities registered by extensions (once, lazily).
+
+    Extensions may return Pydantic AI ``AbstractCapability`` instances (e.g.
+    ``Skills``, ``PrefixTools``) from their ``register_capabilities`` hook.
+    Tools and skills themselves are declared on ``AgentRunner``; this hook
+    is for other SDK capabilities. A raising hook fails open with a warning.
+
+    Returns:
+        A list of capabilities for the Agent, in extension order.
+    """
+    if self._capabilities_initialized:
+        return list(cast(list[Any], self._collected_capabilities))
+
+    capabilities: list[Any] = []
     for ext in self._extensions:
-        register = getattr(ext, "register_tool_sources", None)
+        register = getattr(ext, "register_capabilities", None)
         if register is None:
             continue
         try:
             items = await register()
         except Exception as exc:  # pragma: no cover - fail-open
             self._on_warning(
-                f"Extension {type(ext).__name__} register_tool_sources failed: {exc}",
+                f"Extension {type(ext).__name__} register_capabilities failed: {exc}",
                 exc,
             )
             continue
-        for item in items or []:
-            if isinstance(item, AbstractToolset):
-                # configuration errors (missing/duplicate server name) propagate
-                _add(item)
-                continue
-            try:
-                _add(item)
-            except Exception as exc:  # pragma: no cover - fail-open
-                self._on_warning(
-                    f"Invalid tool from {type(ext).__name__}: {exc}",
-                    exc,
-                )
-                continue
+        capabilities.extend(items or [])
 
-    self._tools = tools
-    self._toolsets = toolsets
-    self._tools_initialized = True
-    return tools, toolsets
+    self._collected_capabilities = list(capabilities)
+    self._capabilities_initialized = True
+    return list(capabilities)
 
 
 # Compaction trigger.

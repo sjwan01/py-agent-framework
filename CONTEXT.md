@@ -26,7 +26,7 @@ principles:
 |--------|---------------|
 | Context persistence | Session-level message storage across three backends, each with a distinct purpose (see below) |
 | Context management | Watermark-based truncation + LLM summarization, designed to keep long conversations within the context window |
-| Extension system | A Protocol-defined set of hooks spanning the full agent and tool lifecycle; the sole mechanism for injecting capabilities |
+| Extension system | A Protocol-defined set of hooks spanning the full agent and tool lifecycle; tools and skills are declared on `AgentRunner`, extensions own the lifecycle (plus optional capability registration) |
 
 ---
 
@@ -217,9 +217,13 @@ guarantees at most one compaction per session at any time.
 
 ### Intent
 
-Extensions are the sole mechanism for injecting capabilities into the agent. The framework
-itself ships with zero built-in tools. Everything — filesystem access, MCP connections,
-sub-agents — arrives through Extensions.
+Extensions are the sole mechanism for injecting **lifecycle behavior** — they
+observe and intercept events during a run. They may also register SDK
+capabilities (``register_capabilities``). Tools and skills are **declared on
+``AgentRunner`` itself** (constructor parameters), not through extensions —
+that would be a hack. The framework itself ships with zero built-in tools.
+Everything — filesystem access, MCP connections, skill libraries — is wired
+in by the application that constructs the runner.
 
 ### Lifecycle Coverage
 
@@ -227,15 +231,22 @@ Extensions implement the `Extension` Protocol, which spans three distinct phases
 
 ---
 
-**Phase 1: Tool registration** (once per `AgentRunner` instance, lazily on first `run()`)
-
-Extensions declare their tools through one hook:
+**Phase 1: Capability registration** (once per `AgentRunner` instance, lazily on first `run()`)
 
 | Hook | When | Extension's role |
 |------|------|-----------------|
-| `register_tool_sources()` | Called once, before the first turn | Return a list of pydantic-ai objects — `Tool` instances (or raw callables) and `AbstractToolset` instances (e.g. `MCPToolset`) |
+| `register_capabilities()` | Called once, before the first turn | Return a list of Pydantic AI `AbstractCapability` instances (e.g. `Skills`, `PrefixTools`). Optional — extensions that only observe events skip it |
 
-The runner collects everything and splits by type: `AbstractToolset` goes to the Agent's `toolsets`, everything else to `tools`. Name conflicts between tools from the same source resolve by last-writer-wins (extensions can thus override any tool). Every toolset must specify a server name (`id`) and server names must be unique — missing/duplicate names fail the run at collection. Each toolset is wrapped in `_ResilientToolset` (a down server degrades instead of crashing the run — both the connection phase `__aenter__` and the catalog phase `get_tools` fail open, see SPEC-stateful-tool-management) and, by default (`prefix_toolset_names=True`), in `PrefixedToolset`: tools are exposed as `{server}_{tool}`, so identically named tools across servers never collide. With prefixing disabled, cross-source name conflicts are reported by pydantic-ai at assembly time. No registration events are fired; runtime interception happens at `TOOL_CALL` (see Phase 3).
+Tools and skills are declared on the constructor (`tools=`, `skills=`), not
+registered here. `collect_tools` validates them: every toolset must specify a
+server name (`id`), server names must be unique, toolsets are wrapped in
+`_ResilientToolset` (a down server degrades — both the connection phase
+`__aenter__` and the catalog phase `get_tools` fail open, see
+SPEC-stateful-tool-management) and, by default (`prefix_toolset_names=True`),
+prefixed with their server name (`{server}_{tool}`) so identically named
+tools across servers never collide. With prefixing disabled, cross-source
+name conflicts are reported by pydantic-ai at assembly time. No registration
+events are fired; runtime interception happens at `TOOL_CALL` (see Phase 3).
 
 ---
 
@@ -337,16 +348,15 @@ underlying SDK:
 |-----------|--------|------|
 | `thinking_enabled`, `thinking_level` | Enable Pydantic AI thinking mode (`ModelSettings["thinking"]`) | SDK pass-through |
 | `parallel_tool_calls` | Allow concurrent tool calls (`ModelSettings["parallel_tool_calls"]`) | SDK pass-through |
-| `hooks` | Append a Pydantic AI `Hooks` instance to capabilities | SDK pass-through |
-| `capabilities` | Append extra Pydantic AI capabilities | SDK pass-through |
 | `max_tool_calls_per_turn` | Hard cap on tool invocations per turn, enforced in the tool loop | Framework logic |
 
 Framework policy parameters (not SDK pass-throughs):
 
 | Parameter | Effect |
 |-----------|--------|
-| `extensions` | Objects implementing the `Extension` protocol (see Extension System) |
-| `tools` | Raw callables or Pydantic AI `Tool` objects registered directly |
+| `extensions` | Objects implementing the `Extension` protocol: lifecycle observers + optional `register_capabilities` (see Extension System) |
+| `tools` | Raw callables or Pydantic AI `Tool` / `AbstractToolset` objects — the **only** tool registration path |
+| `skills` | A Pydantic AI harness `Skills` instance (skill library) available for on-demand loading. Defaults to `None` |
 | `session_manager` | Persistence backend; `None` uses `SingleTurnSessionManager` |
 | `context_config` | Watermark thresholds, protect_turns, truncation (see Context Management) |
 | `summarizer_config` | LLM compaction config (see Compaction) |
