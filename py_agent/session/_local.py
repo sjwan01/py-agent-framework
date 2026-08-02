@@ -9,7 +9,7 @@ from typing import Any, cast
 from uuid import uuid4
 
 import aiosqlite
-from pydantic_ai.messages import ModelRequest, UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 
 from py_agent.session._shared import _infer_role, _MessageAdapter
 from py_agent.types import SessionManager
@@ -126,7 +126,7 @@ class LocalSessionManager(SessionManager):
 
     async def load_history(
         self, session_id: str, *, protect_turns: int = 0
-    ) -> list[Any]:
+    ) -> list[ModelMessage]:
         """Load messages for the session.
 
         Walks backwards from the latest message to find the ``protect_turns``
@@ -225,7 +225,7 @@ class LocalSessionManager(SessionManager):
 
     async def _load_all_messages(
         self, db: aiosqlite.Connection, session_id: str
-    ) -> list[Any]:
+    ) -> list[ModelMessage]:
         """Load every message for the session.
 
         Iterates the cursor row by row so only one JSON string is in memory
@@ -235,14 +235,14 @@ class LocalSessionManager(SessionManager):
             "SELECT content FROM messages WHERE session_id = ? ORDER BY message_seq",
             (session_id,),
         )
-        messages: list[Any] = []
+        messages: list[ModelMessage] = []
         async for row in cursor:
             messages.append(_MessageAdapter.validate_json(row["content"].encode()))
         return messages
 
     async def _load_messages_after(
         self, db: aiosqlite.Connection, session_id: str, boundary_seq: int
-    ) -> list[Any]:
+    ) -> list[ModelMessage]:
         """Load messages with ``message_seq`` greater than *boundary_seq*.
 
         Iterates the cursor row by row so only one JSON string is in memory
@@ -252,13 +252,13 @@ class LocalSessionManager(SessionManager):
             "SELECT content FROM messages WHERE session_id = ? AND message_seq > ? ORDER BY message_seq",
             (session_id, boundary_seq),
         )
-        messages: list[Any] = []
+        messages: list[ModelMessage] = []
         async for row in cursor:
             messages.append(_MessageAdapter.validate_json(row["content"].encode()))
         return messages
 
     async def save_messages(
-        self, session_id: str, messages: list[Any]
+        self, session_id: str, messages: list[ModelMessage]
     ) -> None:
         """Append a batch of new messages (this turn's delta) to the ``messages`` table.
 

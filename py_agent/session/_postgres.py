@@ -142,7 +142,7 @@ class PostgresSessionManager(SessionManager):
 
     async def load_history(
         self, session_id: str, *, protect_turns: int = 0
-    ) -> list[Any]:
+    ) -> list[ModelMessage]:
         """Load messages for the session.
 
         Walks backwards from the latest message to find the ``protect_turns``
@@ -243,7 +243,7 @@ class PostgresSessionManager(SessionManager):
 
     async def _load_all_messages(
         self, conn: AsyncConnection, session_id: str
-    ) -> list[Any]:
+    ) -> list[ModelMessage]:
         """Load every message for the session.
 
         Iterates the cursor row by row so only one JSON string is in memory
@@ -253,14 +253,14 @@ class PostgresSessionManager(SessionManager):
             "SELECT content FROM messages WHERE session_id = %s ORDER BY message_seq",
             (session_id,),
         )
-        messages: list[Any] = []
+        messages: list[ModelMessage] = []
         async for row in cursor:
             messages.append(_deserialize_pg_message(row[0]))
         return messages
 
     async def _load_messages_after(
         self, conn: AsyncConnection, session_id: str, boundary_seq: int
-    ) -> list[Any]:
+    ) -> list[ModelMessage]:
         """Load messages with ``message_seq`` greater than *boundary_seq*.
 
         Iterates the cursor row by row so only one JSON string is in memory
@@ -270,13 +270,13 @@ class PostgresSessionManager(SessionManager):
             "SELECT content FROM messages WHERE session_id = %s AND message_seq > %s ORDER BY message_seq",
             (session_id, boundary_seq),
         )
-        messages: list[Any] = []
+        messages: list[ModelMessage] = []
         async for row in cursor:
             messages.append(_deserialize_pg_message(row[0]))
         return messages
 
     async def save_messages(
-        self, session_id: str, messages: list[Any]
+        self, session_id: str, messages: list[ModelMessage]
     ) -> None:
         """Append this turn's delta messages to the ``messages`` table.
 

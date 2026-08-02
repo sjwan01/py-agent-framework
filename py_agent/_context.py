@@ -2,19 +2,23 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Any
 
-from pydantic_ai.messages import ModelRequest, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelRequestPart,
+    ToolReturnPart,
+)
 
 from py_agent.models import ContextConfig
 from py_agent.session._shared import _is_turn_start
 
 
 async def _prepare_context(
-    messages: list[Any],
+    messages: list[ModelMessage],
     *,
     config: ContextConfig,
-) -> tuple[list[Any], bool]:
+) -> tuple[list[ModelMessage], bool]:
     """Prepare messages for the agent run.
 
     Applies watermark truncation to old tool results outside the protected
@@ -83,7 +87,7 @@ def _estimate_tokens(text: str) -> int:
 
 
 def _estimate_and_find_boundary(
-    messages: list[Any], protect: int
+    messages: list[ModelMessage], protect: int
 ) -> tuple[int, int]:
     """Return a rough token estimate and the truncation boundary.
 
@@ -147,15 +151,15 @@ def _truncate_content(content: str, max_chars: int) -> str:
 
 
 def _truncate_and_estimate(
-    messages: list[Any], boundary: int, max_chars: int
-) -> tuple[list[Any], int]:
+    messages: list[ModelMessage], boundary: int, max_chars: int
+) -> tuple[list[ModelMessage], int]:
     """Truncate old tool results and return the updated messages plus token count.
 
     Does not mutate the original ``messages``. Only exact ``ToolReturnPart``
     instances (not subclasses) whose ``content`` is a string longer than
     ``max_chars`` are truncated via ``_truncate_content``.
     """
-    out: list[Any] = []
+    out: list[ModelMessage] = []
     total_tokens = 0
 
     for i, msg in enumerate(messages):
@@ -168,7 +172,7 @@ def _truncate_and_estimate(
                     total_tokens += _estimate_tokens(content)
             continue
 
-        new_parts: list[Any] = []
+        new_parts: list[ModelRequestPart] = []
         changed = False
         for part in msg.parts:
             if (

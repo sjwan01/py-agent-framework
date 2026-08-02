@@ -10,12 +10,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+from py_agent.types import Extension
+
 
 async def notify_streamers(
-    streamers: list[Any],
+    streamers: list[Extension],
     event: str,
     data: dict[str, Any],
-    pending: list[Any],
+    pending: list[dict[str, Any]],
     on_warning: Callable[[str, Exception | None], None],
 ) -> None:
     """Push runtime events to all streaming extensions.
@@ -49,7 +51,7 @@ async def notify_streamers(
 
 
 async def drain_pending(
-    pending: list[Any]
+    pending: list[dict[str, Any]]
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield and clear every chunk in ``pending`` one at a time."""
     while pending:

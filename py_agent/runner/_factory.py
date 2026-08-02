@@ -7,9 +7,11 @@ is an ``AgentRunner`` instance.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Callable
 from typing import Any, cast
 
 from pydantic_ai import Tool as PydanticTool
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.toolsets import AbstractToolset, PrefixedToolset
 
 from py_agent.types import ToolsetFailureHandler
@@ -76,7 +78,7 @@ class _ResilientToolset(AbstractToolset):
     def __init__(
         self,
         inner: AbstractToolset,
-        on_warning: Any,
+        on_warning: Callable[[str, Exception | None], None],
         handler: ToolsetFailureHandler | None = None,
         *,
         id: str | None = None,
@@ -146,7 +148,9 @@ class _ResilientToolset(AbstractToolset):
 
 # Lazy tool collection (called on the first run).
 
-async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
+async def collect_tools(
+    self: Any,
+) -> tuple[list[PydanticTool[Any]], list[AbstractToolset[Any]]]:
     """Collect tools and toolsets from the constructor's ``tools`` parameter.
 
     Called once during the first ``run()`` / ``run_stream()`` invocation and
@@ -172,12 +176,14 @@ async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
     if self._tools_initialized:
         return self._tools, self._toolsets
 
-    tools: list[Any] = []
-    toolsets: list[Any] = []
-    by_name: dict[str, Any] = {}
+    tools: list[PydanticTool[Any]] = []
+    toolsets: list[AbstractToolset[Any]] = []
+    by_name: dict[str, PydanticTool[Any]] = {}
     seen_server_names: set[str] = set()
 
-    def _add(item: Any) -> None:
+    def _add(
+        item: PydanticTool[Any] | AbstractToolset[Any] | Callable[..., Any],
+    ) -> None:
         """Split a collected item; enforce server names; apply prefixing."""
         if isinstance(item, AbstractToolset):
             server_name = item.id
@@ -223,7 +229,9 @@ async def collect_tools(self: Any) -> tuple[list[Any], list[Any]]:
     return tools, toolsets
 
 
-async def collect_capabilities(self: Any) -> list[Any]:
+async def collect_capabilities(
+    self: Any,
+) -> list[AbstractCapability[Any]]:
     """Collect capabilities registered by extensions (once, lazily).
 
     Extensions may return Pydantic AI ``AbstractCapability`` instances (e.g.
@@ -235,9 +243,9 @@ async def collect_capabilities(self: Any) -> list[Any]:
         A list of capabilities for the Agent, in extension order.
     """
     if self._capabilities_initialized:
-        return list(cast(list[Any], self._collected_capabilities))
+        return list(cast(list[AbstractCapability[Any]], self._collected_capabilities))
 
-    capabilities: list[Any] = []
+    capabilities: list[AbstractCapability[Any]] = []
     for ext in self._extensions:
         register = getattr(ext, "register_capabilities", None)
         if register is None:

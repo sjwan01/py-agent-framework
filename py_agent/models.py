@@ -1,10 +1,10 @@
 """Pydantic data models for the agent framework."""
 from __future__ import annotations
 
-from typing import Any
-
 from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
+from pydantic_ai.usage import RunUsage
 
 
 class ContextConfig(BaseModel):
@@ -66,8 +66,8 @@ class RunResult(BaseModel):
 
     output: str
     session_id: str
-    new_messages: list[Any]
-    usage: Any | None = None
+    new_messages: list[ModelMessage]
+    usage: RunUsage | None = None
 
 
 class SummarizerConfig(BaseModel):

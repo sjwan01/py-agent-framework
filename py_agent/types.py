@@ -9,6 +9,9 @@ from collections.abc import AsyncIterator, Callable
 from enum import StrEnum
 from typing import Any, Protocol
 
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.messages import ModelMessage
+
 # SessionManager (external seam)
 
 class SessionManager(ABC):
@@ -32,10 +35,10 @@ class SessionManager(ABC):
     @abstractmethod
     async def load_history(
         self, session_id: str, *, protect_turns: int = 0
-    ) -> list[Any]: ...
+    ) -> list[ModelMessage]: ...
     @abstractmethod
     async def save_messages(
-        self, session_id: str, messages: list[Any]
+        self, session_id: str, messages: list[ModelMessage]
     ) -> None: ...
     @abstractmethod
     async def apply_compaction(
@@ -74,7 +77,7 @@ class Extension(Protocol):
         on_agent_runner_event_stream: Optional async generator for streaming extensions.
     """
 
-    async def register_capabilities(self) -> list[Any]:
+    async def register_capabilities(self) -> list[AbstractCapability[Any]]:
         """Optional hook: return Pydantic AI ``AbstractCapability`` instances.
 
         Extensions that only observe events can omit this — the default

@@ -23,15 +23,15 @@ from typing import Any
 
 from pydantic_ai.capabilities import Hooks
 
-from py_agent.types import AgentRunnerEvent
+from py_agent.types import AgentRunnerEvent, Extension
 
 
 def build_hooks(
     self: Any,
     session_id: str,
     *,
-    pending: list[Any] | None = None,
-    streamers: list[Any] | None = None,
+    pending: list[dict[str, Any]] | None = None,
+    streamers: list[Extension] | None = None,
 ) -> Hooks:
     """Build a Pydantic AI ``Hooks`` instance.
 

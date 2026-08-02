@@ -4,7 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any, cast
 
-from pydantic_ai.messages import ModelRequest, SystemPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, SystemPromptPart
 from pydantic_ai.models import Model
 from pydantic_ai.usage import RunUsage
 from pydantic_ai_harness.compaction import SummarizingCompaction
@@ -31,7 +31,7 @@ class HarnessSummarizer:
             kwargs["summary_prompt"] = summary_prompt
         self._strategy = SummarizingCompaction(**kwargs)
 
-    async def summarize(self, messages: list[Any]) -> str:
+    async def summarize(self, messages: list[ModelMessage]) -> str:
         """Summarize a message list into a compact history.
 
         Args:

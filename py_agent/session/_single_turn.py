@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+from pydantic_ai.messages import ModelMessage
+
 from py_agent.types import SessionManager
 
 
@@ -29,12 +31,12 @@ class SingleTurnSessionManager(SessionManager):
 
     async def load_history(
         self, session_id: str, *, protect_turns: int = 0
-    ) -> list[Any]:
+    ) -> list[ModelMessage]:
         """Return an empty history for every session."""
         return []
 
     async def save_messages(
-        self, session_id: str, messages: list[Any]
+        self, session_id: str, messages: list[ModelMessage]
     ) -> None:
         """Persist nothing; single-turn mode has no storage."""
         pass

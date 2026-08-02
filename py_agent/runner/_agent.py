@@ -22,6 +22,8 @@ from typing import Any, cast
 
 from pydantic_ai import Agent
 from pydantic_ai import Tool as PydanticTool
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import AbstractToolset
@@ -169,8 +171,8 @@ class AgentRunner:
         self._extensions = extensions or []
 
         self._raw_tools = list(tools)
-        self._tools: list[Any] = []
-        self._toolsets: list[Any] = []
+        self._tools: list[PydanticTool[Any]] = []
+        self._toolsets: list[AbstractToolset[Any]] = []
         self._tools_initialized = False
         self._skills = skills
 
@@ -224,7 +226,7 @@ class AgentRunner:
         self._max_tool_calls_per_turn = max_tool_calls_per_turn
         self._parallel_tool_calls = parallel_tool_calls
 
-        self._collected_capabilities: list[Any] = []
+        self._collected_capabilities: list[AbstractCapability[Any]] = []
         self._capabilities_initialized = False
 
         self._compaction_pending: set[str] = set()
@@ -233,7 +235,7 @@ class AgentRunner:
 
     async def _setup_run(
         self, prompt: str, session_id: str | None
-    ) -> tuple[str, list[Any], list[Any], bool, str]:
+    ) -> tuple[str, list[ModelMessage], list[ModelMessage], bool, str]:
         """Shared pre-run setup for ``run()`` / ``run_stream()``.
 
         Returns:
@@ -340,8 +342,8 @@ class AgentRunner:
         session_id: str,
         *,
         active_sp: str,
-        pending: list[Any] | None = None,
-        streamers: list[Any] | None = None,
+        pending: list[dict[str, Any]] | None = None,
+        streamers: list[Extension] | None = None,
     ) -> Agent:
         """Build the Pydantic AI Agent for this turn.
 
@@ -358,7 +360,7 @@ class AgentRunner:
 
         # assemble the capabilities list: skills (constructor) first, then
         # extension-registered capabilities, then the framework's tool hooks
-        capabilities: list[Any] = []
+        capabilities: list[AbstractCapability[Any]] = []
         if self._skills is not None:
             capabilities.append(self._skills)
         capabilities.extend(await self._collect_capabilities())
@@ -405,13 +407,13 @@ class AgentRunner:
     async def _finalize_run(
         self,
         session_id: str,
-        injected: list[Any],
+        injected: list[ModelMessage],
         result: Any,
         output: str,
         needs_compaction: bool,
         *,
-        streamers: list[Any] | None = None,
-        pending: list[Any] | None = None,
+        streamers: list[Extension] | None = None,
+        pending: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Shared post-run cleanup for ``run()`` / ``run_stream()``.
 
