@@ -192,7 +192,7 @@ class AgentRunnerEvent(StrEnum):
     AFTER_AGENT_RUN = "after_agent_run"
     SESSION_SAVE = "session_save"
     COMPACTION_TRIGGER = "compaction_trigger"
-    COMPACTION_SCHEDULED = "compaction_applied"
+    COMPACTION_SCHEDULED = "compaction_scheduled"
 
 
 
