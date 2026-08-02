@@ -5,5 +5,4 @@ __pycache__/
 .pytest_cache/
 *.db
 .DS_Store
-tests/
 .scratch/
