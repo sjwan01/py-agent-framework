@@ -341,6 +341,21 @@ underlying SDK:
 | `capabilities` | Append extra Pydantic AI capabilities | SDK pass-through |
 | `max_tool_calls_per_turn` | Hard cap on tool invocations per turn, enforced in the tool loop | Framework logic |
 
+Framework policy parameters (not SDK pass-throughs):
+
+| Parameter | Effect |
+|-----------|--------|
+| `extensions` | Objects implementing the `Extension` protocol (see Extension System) |
+| `tools` | Raw callables or Pydantic AI `Tool` objects registered directly |
+| `session_manager` | Persistence backend; `None` uses `SingleTurnSessionManager` |
+| `context_config` | Watermark thresholds, protect_turns, truncation (see Context Management) |
+| `summarizer_config` | LLM compaction config (see Compaction) |
+| `on_warning` | Callback for non-fatal errors (extension crashes, toolset degradation, compaction failures) |
+| `toolset_failure` | Custom handler when a toolset's catalog or connection fails: return a dict to substitute tools, `None` for default warn-and-drop, raise to fail the run (see `ToolsetFailureHandler`) |
+| `prefix_toolset_names` | Default `True`: prefix every toolset's tools with its server name (`{server}_{tool}`) so identically named tools across servers never collide. Disable to expose raw names (conflicts then reported by pydantic-ai at assembly) |
+
+`AgentRunner.close()` releases the session backend (toolset connections are entered and exited by the SDK on every run, so nothing persists there).
+
 ### `py_agent.session` — persistence backends and related types
 
 | Name | Kind | Why the user needs it |
@@ -350,8 +365,6 @@ underlying SDK:
 | `LocalSessionManager` | Class | SQLite backend for local development |
 | `PostgresSessionManager` | Class | PostgreSQL backend for production |
 
-| `MessageRole` | StrEnum | Type for the `role` column in custom `SessionManager` implementations |
-
 ### `py_agent.types` — protocols, enums, and type aliases
 
 | Name | Kind | Why the user needs it |
@@ -359,7 +372,7 @@ underlying SDK:
 | `Extension` | Protocol | Implement custom extensions |
 | `AgentRunnerEvent` | StrEnum | Match event names in `on_agent_runner_event` |
 | `MessageRole` | StrEnum | Type for the `role` column in custom `SessionManager` implementations |
-| `ToolsetFailureHandler` | Type alias | Custom handling when a toolset's catalog fails to load (e.g. a down MCP server): return a dict to substitute tools, `None` for warn-and-drop, or raise to fail the run |
+| `ToolsetFailureHandler` | Type alias | Custom handling when a toolset's connection or catalog fails to load (e.g. a down MCP server): return a dict to substitute tools, `None` for warn-and-drop, or raise to fail the run. Handler exceptions propagate (a mistyped signature fails fast at construction) |
 
 ### Not Exported
 
