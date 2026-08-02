@@ -6,3 +6,5 @@ __pycache__/
 *.db
 .DS_Store
 .scratch/
+AGENTS.md
+CONTEXT.md
