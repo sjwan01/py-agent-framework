@@ -113,7 +113,12 @@ class _ResilientToolset(AbstractToolset):
             # would raise ("called more times than __aenter__")
             self._enter_failed = False
             return None
-        return await self._inner.__aexit__(*args)
+        try:
+            return await self._inner.__aexit__(*args)
+        except Exception as exc:  # pragma: no cover - fail-open
+            # exit is teardown — a failure must not crash the run
+            self._on_warning(f"Toolset {self.id} exit failed: {exc}", exc)
+            return None
 
     async def get_tools(self, ctx: Any) -> dict[str, Any]:
         """Load the catalog; on failure degrade (or delegate to the handler)."""
