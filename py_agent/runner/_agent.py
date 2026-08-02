@@ -97,11 +97,11 @@ class AgentRunner:
             agent. Defaults to ``None``.
         on_warning: Callback for non-fatal errors (extension crashes,
             compaction failures, etc.). Defaults to a no-op.
-        toolset_failure: Custom handler for a toolset whose catalog failed to
-            load (e.g. an MCP server is down). Return a dict to substitute
-            tools, ``None`` for the default warn-and-drop, or raise to fail
-            the run. Defaults to ``None`` (warn and drop — partial
-            degradation, other servers keep working).
+        toolset_failure: Custom handler for a toolset whose connection or
+            catalog failed to load (e.g. an MCP server is down). Return a
+            dict to substitute tools, ``None`` for the default warn-and-drop,
+            or raise to fail the run. Defaults to ``None`` (warn and drop —
+            partial degradation, other servers keep working).
         prefix_toolset_names: Prefix every toolset's tools with its server
             name (``{server}_{tool}``) so identically named tools across
             servers never collide. When disabled, cross-source name

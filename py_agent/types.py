@@ -89,7 +89,7 @@ class Extension(Protocol):
 ToolsetFailureHandler = Callable[
     [str, Exception], dict[str, Any] | None
 ]
-"""Handler for a toolset whose tool catalog failed to load.
+"""Handler for a toolset whose connection or catalog failed to load.
 
 - Return a ``dict`` to substitute this server's tools for this run (an empty
   dict drops them — partial degradation).
