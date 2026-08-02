@@ -231,6 +231,12 @@ must live in exactly one of them — never scattered elsewhere.
 Rules:
 - No implementation code. No method bodies, no logic, no imports of
   third-party SDKs beyond what the signatures need.
+- Exception: **optional Protocol methods** may carry a default body that
+  declares their default behavior as part of the interface — e.g.
+  `register_capabilities` returning `[]` ("contributes nothing") or
+  `on_agent_runner_event_stream`'s unreachable generator. This is interface
+  declaration, not business logic; anything with real behavior belongs in
+  the implementation modules.
 - Every new ABC/Protocol/enum/alias you create belongs here. If you find
   one defined in another file, move it here.
 
