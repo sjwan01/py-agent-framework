@@ -74,7 +74,6 @@ Optional extras:
 
 ```bash
 pip install "py-agent[postgres]"   # PostgreSQL backend
-pip install "py-agent[dev]"        # dev tooling (ruff, mypy, pytest)
 ```
 
 ## Quick Start
@@ -232,24 +231,13 @@ events and token chunks as they happen, ending with `run_end`.
 
 ## Development
 
-```bash
-git clone git@github.com:sjwan01/py-agent.git
-cd py-agent
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
-ruff check py_agent/ tests/   # lint
-mypy py_agent/                # type check (strict)
-pytest tests/ -q              # tests
-```
+Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the
+`make` workflow (`make bootstrap` → `make check`).
 
 ## Contributing
 
-Issues and pull requests are welcome. Please:
-
-1. Open an issue to discuss the change before a large PR.
-2. Run the three checks above (`ruff`, `mypy`, `pytest`) — CI enforces them.
-3. Keep changes focused; one logical change per PR.
+Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for the developer workflow. Before a large PR, open an issue to discuss it.
 
 ## License
 
