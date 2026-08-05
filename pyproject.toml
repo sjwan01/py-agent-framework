@@ -45,7 +45,7 @@ dynamic = ["version"]
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.3", "psycopg-pool>=3.3"]
-dev = ["ruff", "mypy", "pytest", "pytest-asyncio"]
+dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "fastmcp-slim[server]>=3.4"]
 
 [project.urls]
 Homepage = "https://github.com/sjwan01/py-agent"
