@@ -8,7 +8,7 @@ dist/
 AGENTS.md
 CONTEXT.md
 
-# Ignore all dotfiles/directories except .gitignore itself
+# Ignore all dotfiles/directories except .gitignore and .github
 .*
 !.gitignore
-# !.github/   # uncomment when you add .github templates (issue/PR templates, workflows)
+!.github/

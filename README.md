@@ -4,6 +4,7 @@
 [![Python versions](https://img.shields.io/pypi/pyversions/py-agent)](https://pypi.org/project/py-agent/)
 [![License](https://img.shields.io/github/license/sjwan01/py-agent)](LICENSE)
 [![Downloads](https://img.shields.io/pypi/dm/py-agent)](https://pypi.org/project/py-agent/)
+[![CI](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml)
 
 A stateful LLM agent framework built on [pydantic-ai](https://ai.pydantic.dev).
 It adds what Pydantic AI does not provide out of the box: **session-level
