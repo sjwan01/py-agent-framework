@@ -1,8 +1,7 @@
 name: CI
 
 on:
-  push:
-    branches: [feature/agent-framework, main] # main once it becomes the trunk
+  push:          # run on every branch push (and tag pushes — harmless)
   pull_request:
 
 permissions:
