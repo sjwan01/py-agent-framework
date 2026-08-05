@@ -1,7 +1,7 @@
 # py-agent development Makefile
 # Usage: make lint / make typecheck / make test / make check / make build ...
 
-PYTHON ?= python
+PYTHON ?= python3
 VENV   ?= venv
 BIN    := $(VENV)/bin
 
@@ -14,11 +14,11 @@ bootstrap:
 
 ## Install the package in editable mode (no extras)
 install:
-	$(PYTHON) -m pip install -e .
+	$(BIN)/pip install -e .
 
 ## Install with dev + postgres extras (uses existing env)
 dev:
-	$(PYTHON) -m pip install -e ".[dev,postgres]"
+	$(BIN)/pip install -e ".[dev,postgres]"
 
 ## Lint with ruff
 lint:
@@ -37,7 +37,7 @@ check: lint typecheck test
 
 ## Build sdist + wheel into dist/
 build: clean
-	$(PYTHON) -m build
+	$(BIN)/python -m build
 
 ## Publish to TestPyPI (dry run before the real release)
 publish-test: build
