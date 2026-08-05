@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from psycopg import AsyncConnection
-from psycopg_pool import AsyncConnectionPool
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserPromptPart
 
 from py_agent.session._shared import _infer_role, _MessageAdapter
 from py_agent.types import SessionManager
+
+if TYPE_CHECKING:
+    from psycopg import AsyncConnection
+    from psycopg_pool import AsyncConnectionPool
 
 # PostgreSQL schema
 # sessions: one row per session, metadata stored as JSONB.
@@ -96,8 +98,19 @@ class PostgresSessionManager(SessionManager):
         """Get (or lazily create) the connection pool.
 
         Creates the pool, opens it, and ensures the schema exists on first call.
+
+        Raises:
+            ImportError: When the optional ``postgres`` extra is not installed
+                (``pip install "py-agent[postgres]"``).
         """
         if self._pool is None:
+            try:
+                from psycopg_pool import AsyncConnectionPool
+            except ImportError as exc:  # pragma: no cover - optional extra
+                raise ImportError(
+                    "PostgresSessionManager requires the 'postgres' extra: "
+                    'pip install "py-agent[postgres]"'
+                ) from exc
             self._pool = AsyncConnectionPool(
                 self._pg_url,
                 # min_size: keep warm connections to avoid cold-start latency

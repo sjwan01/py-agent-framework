@@ -1,10 +1,14 @@
 venv/
-.env
 __pycache__/
 *.pyc
-.pytest_cache/
 *.db
-.DS_Store
-.scratch/
+build/
+dist/
+*.egg-info/
 AGENTS.md
 CONTEXT.md
+
+# Ignore all dotfiles/directories except .gitignore itself
+.*
+!.gitignore
+# !.github/   # uncomment when you add .github templates (issue/PR templates, workflows)
