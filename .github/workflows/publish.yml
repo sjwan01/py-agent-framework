@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write           # required for Trusted Publishing (OIDC) to PyPI/TestPyPI
 
 concurrency:
   group: publish-${{ github.ref }}
@@ -16,9 +17,6 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # secrets can't be referenced in `if` directly — map to env first
-    env:
-      TEST_PYPI_API_TOKEN: ${{ secrets.TEST_PYPI_API_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -40,20 +38,18 @@ jobs:
         run: venv/bin/twine check dist/*
 
       # Trial publish — runs automatically on every push/merge to main.
-      # skip-existing keeps repeat merges from failing on a 409 for the
-      # same version already on TestPyPI.
+      # Uses Trusted Publishing (OIDC); skip-existing keeps repeat merges
+      # from failing on a 409 for a version already on TestPyPI.
       - name: Publish to TestPyPI (trial, auto on main)
-        if: github.event_name == 'push' && env.TEST_PYPI_API_TOKEN != ''
+        if: github.event_name == 'push'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
-          password: ${{ secrets.TEST_PYPI_API_TOKEN }}
           skip-existing: true
 
       # Production publish — manual only (Actions → Run workflow).
-      # Deliberately NOT triggered by tags or pushes.
+      # Uses Trusted Publishing (OIDC). Deliberately NOT triggered by tags
+      # or pushes.
       - name: Publish to PyPI (production, manual only)
         if: github.event_name == 'workflow_dispatch'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
