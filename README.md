@@ -208,6 +208,11 @@ Selected events:
 | `SESSION_SAVE` | before persistence | ✅ replace `delta_messages` |
 | `COMPACTION_TRIGGER` | compaction flagged | ✅ `{"cancel": true}` to veto |
 
+**Streaming extensions:** implement `on_agent_runner_event_stream(event, data)`
+as an async generator to receive runtime events (`TOKEN_STREAM`, tool events,
+lifecycle events) — each chunk it yields is forwarded to the `run_stream()`
+consumer. Without such an extension, `run_stream()` yields only `run_end`.
+
 ## Public API
 
 ```python
@@ -216,8 +221,33 @@ from py_agent.session import SessionManager, SingleTurnSessionManager, LocalSess
 from py_agent.types import Extension, AgentRunnerEvent, MessageRole, ToolsetFailureHandler
 ```
 
-`AgentRunner` also offers `run_stream()` — an async iterator yielding lifecycle
-events and token chunks as they happen, ending with `run_end`.
+`AgentRunner` also offers `run_stream()` — an async iterator over runtime
+events: chunks yielded by streaming extensions (implementing
+`on_agent_runner_event_stream`) are forwarded as they happen, and the stream
+always ends with `run_end`. A bare consumer receives only `run_end`.
+
+## Known issues
+
+### pydantic-ai drops post-tool-call text in thinking + streaming mode
+
+With `thinking_enabled=True` (the default) and `run_stream()`, pydantic-ai
+2.22+ can terminate the agent loop right after a tool returns (verified on
+`deepseek-v4-flash` on both 2.22.0 and 2.25.0): the session's messages contain
+no second model response, so the post-tool-call text is never generated.
+`run_end.output` is not a reliable fallback — it is nondeterministic
+(truncated on some runs, complete on others). Non-streaming `run()` is always
+complete and is the only reliable path when thinking is enabled and the model
+calls tools.
+
+Workarounds:
+
+- Prefer `run()` over `run_stream()` when thinking is enabled.
+- Set `thinking_enabled=False` when streaming output matters more than
+  thinking.
+
+`AgentRunner` emits an `on_warning` on the first `run_stream()` call when
+`thinking_enabled=True` (`run()` never warns — it is not affected by the
+defect).
 
 ## Development
 
