@@ -101,6 +101,10 @@ class _EventBridge:
     yielding ``token`` events for ``TOKEN_STREAM``. The bridge never mutates
     chain data — its chain hook always returns ``None``.
 
+    Queued events are pre-rewrite snapshots: the bridge sits first in the
+    chain, so it observes the dispatched values before user extensions modify
+    them (e.g. rewritten ``args`` / ``content`` never reach the consumer).
+
     Ordering is safe because every tool call is followed by a ``TOOL_END``
     stream event, so the queue drains on the next stream tick; even if a
     stream notification is skipped (fail-open), the queue drains at the

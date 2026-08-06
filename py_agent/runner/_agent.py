@@ -707,6 +707,13 @@ class AgentRunner:
           "new_messages": list, "usage": ...}`` — the stream always ends
           with this.
 
+        Events are snapshots taken at the interception point: ``tool_call.args``
+        and ``tool_result.content`` reflect the values the hooks dispatched,
+        before user extensions rewrite them in chain mode (rewritten values are
+        visible only through ``on_agent_runner_event`` return values).
+        ``tool_result.is_error`` is a known limitation: the hooks never set it
+        to ``True``, so consumers always see ``False``.
+
         Ordering: ``tool_call`` / ``tool_result`` events precede the token
         chunk of the text that follows them, and the stream always ends with
         ``run_end``. User extensions behave exactly as under ``run_stream()``:

@@ -180,6 +180,72 @@ class TestEarlyAbortRestoresExtensions:
         assert runner._extensions == [ext]
 
 
+class TestInterceptSnapshotSemantics:
+    """Events carry pre-intercept snapshots, not post-rewrite values."""
+
+    async def test_tool_call_args_are_pre_rewrite_snapshot(self) -> None:
+        """An args-rewriting extension does not alter the consumer's tool_call."""
+        class _ArgsRewriter:
+            async def on_agent_runner_event(
+                self, event: str, data: dict[str, Any]
+            ) -> dict[str, Any] | None:
+                """Rewrite tool args at TOOL_CALL."""
+                if event == AgentRunnerEvent.TOOL_CALL:
+                    return {"args": {"x": 99}}
+                return None
+
+        runner = AgentRunner(
+            model=TestModel(call_tools=["t"]),
+            system_prompt="sp",
+            tools=[PydanticTool(_tool_func, name="t")],
+            extensions=[_ArgsRewriter()],
+        )
+
+        events = [event async for event in runner.run_with_events("hi")]
+
+        tool_call = next(e for e in events if e["type"] == "tool_call")
+        # original dispatched args, not the extension-rewritten {"x": 99}
+        assert tool_call["args"] == {"x": 1}
+
+    async def test_tool_result_content_is_pre_rewrite_snapshot(self) -> None:
+        """A content-rewriting extension does not alter the consumer's tool_result."""
+        class _ContentRewriter:
+            async def on_agent_runner_event(
+                self, event: str, data: dict[str, Any]
+            ) -> dict[str, Any] | None:
+                """Rewrite tool content at TOOL_RESULT."""
+                if event == AgentRunnerEvent.TOOL_RESULT:
+                    return {"content": "rewritten by extension"}
+                return None
+
+        runner = AgentRunner(
+            model=TestModel(call_tools=["t"]),
+            system_prompt="sp",
+            tools=[PydanticTool(_tool_func, name="t")],
+            extensions=[_ContentRewriter()],
+        )
+
+        events = [event async for event in runner.run_with_events("hi")]
+
+        tool_result = next(e for e in events if e["type"] == "tool_result")
+        # original tool output, not the extension-rewritten content
+        assert tool_result["content"] == "result 1"
+
+    async def test_tool_result_is_error_is_always_false(self) -> None:
+        """is_error is a known limitation: hooks never set it, so it is False."""
+        runner = AgentRunner(
+            model=TestModel(call_tools=["t"]),
+            system_prompt="sp",
+            tools=[PydanticTool(_tool_func, name="t")],
+        )
+
+        events = [event async for event in runner.run_with_events("hi")]
+
+        tool_results = [e for e in events if e["type"] == "tool_result"]
+        assert tool_results
+        assert all(e["is_error"] is False for e in tool_results)
+
+
 class TestNoToolPath:
     """run_with_events() without tools yields token + run_end only."""
 

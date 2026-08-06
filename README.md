@@ -243,6 +243,11 @@ Tool events precede the token chunk of the text that follows them, and the
 stream always ends with `run_end`. User extensions keep observing events
 under `run_with_events()` (the internal bridge never mutates chain data).
 
+Events are snapshots taken before chain-mode extension rewrites:
+`tool_call.args` and `tool_result.content` show the values the hooks
+dispatched, not the rewritten effective values. `tool_result.is_error` is
+always `False` — the hooks never set it (a known limitation).
+
 ## Known issues
 
 ### pydantic-ai drops post-tool-call text in thinking + streaming mode
