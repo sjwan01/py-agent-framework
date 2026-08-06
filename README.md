@@ -1,4 +1,4 @@
-# py-agent
+# py-agent-framework
 
 [![PyPI version](https://img.shields.io/pypi/v/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
 [![Python versions](https://img.shields.io/pypi/pyversions/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
@@ -15,12 +15,12 @@ its extension-driven lifecycle, progressive-disclosure skills, and
 reload-by-reconstruction pattern. This is an independent implementation on
 pydantic-ai, not a port.*
 
-## Why py-agent?
+## Why py-agent-framework?
 
 Pydantic AI gives you `Agent`, `Tool`, and Hooks primitives. What it does *not*
 give you is memory across turns:
 
-| | Bare pydantic-ai | py-agent |
+| | Bare pydantic-ai | py-agent-framework |
 |---|---|---|
 | Multi-turn conversation | ❌ you re-supply all history every call | ✅ `session_id` in, history out |
 | Long conversations | ❌ you hand-roll truncation/summarization | ✅ dual-watermark context management |
