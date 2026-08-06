@@ -1,7 +1,7 @@
 # py-agent
 
-[![PyPI version](https://img.shields.io/pypi/v/py-agent)](https://pypi.org/project/py-agent/)
-[![Python versions](https://img.shields.io/pypi/pyversions/py-agent)](https://pypi.org/project/py-agent/)
+[![PyPI version](https://img.shields.io/pypi/v/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
+[![Python versions](https://img.shields.io/pypi/pyversions/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
 [![License](https://img.shields.io/github/license/sjwan01/py-agent)](LICENSE)
 [![CI](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml)
 
@@ -57,13 +57,13 @@ save" loop, that loop is this library.
 Requires **Python ≥ 3.11**.
 
 ```bash
-pip install py-agent
+pip install py-agent-framework
 ```
 
 Optional extras:
 
 ```bash
-pip install "py-agent[postgres]"   # PostgreSQL backend
+pip install "py-agent-framework[postgres]"   # PostgreSQL backend
 ```
 
 ## Quick Start
@@ -111,7 +111,7 @@ r2 = await runner.run("What did I ask you to remember?", session_id=r1.session_i
 Swap the backend without touching the rest of your code:
 
 ```python
-from py_agent.session import PostgresSessionManager  # requires: pip install "py-agent[postgres]"
+from py_agent.session import PostgresSessionManager  # requires: pip install "py-agent-framework[postgres]"
 
 session_manager = PostgresSessionManager(pg_url="postgres://user:pass@localhost/db")
 ```
