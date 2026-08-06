@@ -10,7 +10,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
-from py_agent.types import Extension
+from pydantic_ai.capabilities import AbstractCapability
+
+from py_agent.types import AgentRunnerEvent, Extension
 
 if TYPE_CHECKING:
     from py_agent.runner import AgentRunner
@@ -85,6 +87,84 @@ async def fire(
         if isinstance(r, dict):
             current.update(r)
     return current
+
+
+class _EventBridge:
+    """Private extension bridging chain/stream events to ``run_with_events()``.
+
+    ``TOOL_CALL`` / ``TOOL_RESULT`` are chain-only events (dispatched via
+    ``fire``, which iterates the runner's extensions), while ``TOKEN_STREAM``
+    and the other streamed lifecycle events reach streaming extensions. This
+    bridge implements both hooks: the chain hook queues normalized
+    ``tool_call`` / ``tool_result`` events, and the stream hook drains the
+    queue first (so tool events precede the next streamed token) before
+    yielding ``token`` events for ``TOKEN_STREAM``. The bridge never mutates
+    chain data — its chain hook always returns ``None``.
+
+    Ordering is safe because every tool call is followed by a ``TOOL_END``
+    stream event, so the queue drains on the next stream tick; even if a
+    stream notification is skipped (fail-open), the queue drains at the
+    following stream event.
+    """
+
+    def __init__(self) -> None:
+        self._queue: list[dict[str, Any]] = []
+
+    async def register_capabilities(self) -> list[AbstractCapability[Any]]:
+        """The bridge contributes no SDK capabilities."""
+        return []
+
+    async def on_agent_runner_event(
+        self, event: str, data: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Queue a normalized event for TOOL_CALL / TOOL_RESULT; never mutate.
+
+        Args:
+            event: The chain-mode event name.
+            data: The event payload.
+
+        Returns:
+            ``None`` — the bridge observes and never mutates chain data.
+        """
+        if event == AgentRunnerEvent.TOOL_CALL:
+            self._queue.append(
+                {
+                    "type": "tool_call",
+                    "tool_name": data["tool_name"],
+                    "tool_call_id": data["tool_call_id"],
+                    "args": data["args"],
+                }
+            )
+        elif event == AgentRunnerEvent.TOOL_RESULT:
+            self._queue.append(
+                {
+                    "type": "tool_result",
+                    "tool_name": data["tool_name"],
+                    "tool_call_id": data["tool_call_id"],
+                    "content": data["content"],
+                    "is_error": data["is_error"],
+                }
+            )
+        return None
+
+    async def on_agent_runner_event_stream(
+        self, event: str, data: dict[str, Any]
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Drain queued tool events, then yield a token for TOKEN_STREAM.
+
+        Args:
+            event: The streamed event name.
+            data: The event payload.
+
+        Yields:
+            Queued ``tool_call`` / ``tool_result`` events first, then a
+            ``token`` event for ``TOKEN_STREAM``. Other streamed events are
+            ignored.
+        """
+        while self._queue:
+            yield self._queue.pop(0)
+        if event == AgentRunnerEvent.TOKEN_STREAM:
+            yield {"type": "token", "chunk": data["data"]["chunk"]}
 
 
 async def fire_notify(
