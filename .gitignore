@@ -5,8 +5,6 @@ __pycache__/
 build/
 dist/
 *.egg-info/
-AGENTS.md
-CONTEXT.md
 
 # Ignore all dotfiles/directories except .gitignore and .github
 .*

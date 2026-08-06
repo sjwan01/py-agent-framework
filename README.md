@@ -3,13 +3,17 @@
 [![PyPI version](https://img.shields.io/pypi/v/py-agent)](https://pypi.org/project/py-agent/)
 [![Python versions](https://img.shields.io/pypi/pyversions/py-agent)](https://pypi.org/project/py-agent/)
 [![License](https://img.shields.io/github/license/sjwan01/py-agent)](LICENSE)
-[![Downloads](https://img.shields.io/pypi/dm/py-agent)](https://pypi.org/project/py-agent/)
 [![CI](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml)
 
 A stateful LLM agent framework built on [pydantic-ai](https://ai.pydantic.dev).
 It adds what Pydantic AI does not provide out of the box: **session-level
 multi-turn persistence**, **context-window management**, and a **lifecycle
 extension system** — with the smallest possible footprint.
+
+*Architecture inspired by [Pi Agent](https://github.com/badlogic/pi-agent) —
+its extension-driven lifecycle, progressive-disclosure skills, and
+reload-by-reconstruction pattern. This is an independent implementation on
+pydantic-ai, not a port.*
 
 ## Why py-agent?
 
@@ -25,20 +29,6 @@ give you is memory across turns:
 
 If you were about to write your own "load history → truncate → call model →
 save" loop, that loop is this library.
-
-## Table of Contents
-
-- [Features](#features)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Multi-turn Persistence](#multi-turn-persistence)
-- [Context Management](#context-management)
-- [Tools, MCP & Skills](#tools-mcp--skills)
-- [Extensions](#extensions)
-- [Public API](#public-api)
-- [Development](#development)
-- [Contributing](#contributing)
-- [License](#license)
 
 ## Features
 
@@ -236,15 +226,12 @@ Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the
 
 ## Contributing
 
-Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for the developer workflow. Before a large PR, open an issue to discuss it.
+This is a **personal project** and not yet ready for external contributors.
+Bug reports and feature discussions via
+[issues](https://github.com/sjwan01/py-agent/issues) are welcome. If you would
+still like to submit a change, see [CONTRIBUTING.md](CONTRIBUTING.md) — PRs
+are required and the project's standards are enforced.
 
 ## License
 
 [MIT](LICENSE) © Shunji Wan
-
----
-
-*Architecture inspired by [Pi Agent](https://github.com/badlogic/pi-agent) — its
-extension-driven lifecycle, progressive-disclosure skills, and reload-by-reconstruction
-pattern. This is an independent implementation on pydantic-ai, not a port.*

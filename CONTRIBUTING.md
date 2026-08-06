@@ -1,7 +1,19 @@
 # Contributing to py-agent
 
+> **Project status:** this is currently a **personal project** and is **not
+> yet ready for external contributors**. The contribution process is still
+> maturing. If you are genuinely interested in contributing, please read the
+> rest of this file and follow the conventions below — and note that
+> contributions are accepted **only via pull requests**. Direct pushes to the
+> repo are not possible, and PRs are required for any change.
+
 Thanks for wanting to contribute! This file is for **developers**. Users should
 read the [README](README.md).
+
+Before writing code, read [AGENTS.md](AGENTS.md) — the project's coding
+standards (type safety, docstrings, error handling, testing conventions).
+Agent tools load it automatically; treat it as the contract for every change.
+The design rationale lives in [CONTEXT.md](CONTEXT.md).
 
 ## Setup
 
@@ -59,5 +71,5 @@ dependencies come from the `dev` extra (`fastmcp-slim[server]`).
 
 - Follow the existing style — ruff (`import` order, pyflakes, module docstrings)
   and mypy strict are the contract.
-- No Chinese characters in source files.
+- No non-English characters in source files.
 - New public API must be added to `__all__` in the relevant `__init__.py`.
