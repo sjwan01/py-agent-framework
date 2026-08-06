@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:          # run on every branch push (and tag pushes — harmless)
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: pyagent_test
+          POSTGRES_USER: pyagent
+          POSTGRES_PASSWORD: pyagent
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pyagent -d pyagent_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      PG_TEST_URL: postgresql://pyagent:pyagent@localhost:5432/pyagent_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Set up virtualenv and install package
+        run: make bootstrap
+      - name: Run checks (lint + typecheck + test, incl. Postgres)
+        run: make check

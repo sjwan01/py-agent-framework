@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "py-agent-framework"
+description = "A stateful LLM agent framework on pydantic-ai: session persistence, context-window management, and a lifecycle extension system"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Shunji Wan", email = "shunjiwan2001@gmail.com" }]
+keywords = [
+    "agent",
+    "llm",
+    "pydantic-ai",
+    "session",
+    "context",
+    "multi-turn",
+    "mcp",
+    "sqlite",
+    "postgres",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.13",
+    "pydantic-ai-slim[openai,mcp]>=2.22",
+    "pydantic-ai-harness[skills]>=0.15",
+    "aiohttp>=3.14",
+    "aiosqlite>=0.22",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.3", "psycopg-pool>=3.3"]
+dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "fastmcp-slim[server]>=3.4"]
+
+[project.urls]
+Homepage = "https://github.com/sjwan01/py-agent-framework"
+Repository = "https://github.com/sjwan01/py-agent-framework"
+
+[tool.hatch.build.targets.wheel]
+packages = ["py_agent"]
+
+[tool.hatch.build.targets.sdist]
+include = ["py_agent"]
+
+[tool.hatch.version]
+path = "py_agent/__init__.py"

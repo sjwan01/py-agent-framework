@@ -1,0 +1,55 @@
+name: Publish to PyPI
+
+on:
+  push:
+    branches: [main]        # merge/push to main → auto trial publish to TestPyPI
+  workflow_dispatch:        # manual → production publish to PyPI (never automatic)
+
+permissions:
+  contents: read
+  id-token: write           # required for Trusted Publishing (OIDC) to PyPI/TestPyPI
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up virtualenv and install package
+        run: make bootstrap
+
+      - name: Run checks before publishing
+        run: make check
+
+      - name: Build package
+        run: |
+          venv/bin/pip install build twine
+          venv/bin/python -m build
+
+      - name: Verify package metadata
+        run: venv/bin/twine check dist/*
+
+      # Trial publish — runs automatically on every push/merge to main.
+      # Uses Trusted Publishing (OIDC); skip-existing keeps repeat merges
+      # from failing on a 409 for a version already on TestPyPI.
+      - name: Publish to TestPyPI (trial, auto on main)
+        if: github.event_name == 'push'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+      # Production publish — manual only (Actions → Run workflow).
+      # Uses Trusted Publishing (OIDC). Deliberately NOT triggered by tags
+      # or pushes.
+      - name: Publish to PyPI (production, manual only)
+        if: github.event_name == 'workflow_dispatch'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.db
+build/
+dist/
+*.egg-info/
+
+# Ignore all dotfiles/directories except .gitignore and .github
+.*
+!.gitignore
+!.github/
