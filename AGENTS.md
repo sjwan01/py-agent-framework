@@ -472,18 +472,16 @@ asyncio_mode = auto
 
 ## Release
 
-Releases are tag-driven via GitHub Actions (`publish.yml`):
+Publishing is split — trial is automatic, production is manual-only:
 
-```bash
-# 1. bump the version in py_agent/__init__.py, then commit
-# 2. tag and push — the workflow runs make check, builds, and publishes to PyPI
+- **Trial (TestPyPI):** any push/merge to `main` runs the publish workflow
+  and uploads to TestPyPI automatically (`TEST_PYPI_API_TOKEN` secret;
+  skipped when the secret is unset). This is the dry run.
+- **Production (PyPI):** manual only — Actions → Publish to PyPI →
+  Run workflow. Never triggered by tags or pushes.
 
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The workflow refuses to publish if `make check` fails. Tags are `vX.Y.Z`
-(`v` prefix). Do not build/upload to PyPI manually.
+The workflow runs `make check` first and refuses to publish on failure.
+Version lives in `py_agent/__init__.py` — bump it there before a release.
 
 ---
 
