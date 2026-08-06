@@ -712,6 +712,8 @@ class AgentRunner:
         ``run_end``. User extensions behave exactly as under ``run_stream()``:
         chain events still dispatch to ``on_agent_runner_event`` and an
         internal bridge (``_internals._EventBridge``) never mutates chain data.
+        Like the other entry points, this method assumes a single in-flight
+        run per runner instance.
 
         Known limitation: this API uses the same ``agent.run_stream()`` path,
         so the pydantic-ai thinking + streaming + tools defect applies equally
