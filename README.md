@@ -1,8 +1,8 @@
 # py-agent-framework
 
-[![PyPI version](https://img.shields.io/pypi/v/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
-[![Python versions](https://img.shields.io/pypi/pyversions/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
-[![License](https://img.shields.io/github/license/sjwan01/py-agent-framework)](LICENSE)
+[![PyPI version](https://img.shields.io/pypi/v/py-agent-framework?refresh_cache=true)](https://pypi.org/project/py-agent-framework/)
+[![Python versions](https://img.shields.io/pypi/pyversions/py-agent-framework?refresh_cache=true)](https://pypi.org/project/py-agent-framework/)
+[![License](https://img.shields.io/github/license/sjwan01/py-agent-framework?refresh_cache=true)](LICENSE)
 [![CI](https://github.com/sjwan01/py-agent-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/sjwan01/py-agent-framework/actions/workflows/ci.yml)
 
 A stateful LLM agent framework built on [pydantic-ai](https://ai.pydantic.dev).
