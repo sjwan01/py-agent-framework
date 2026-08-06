@@ -161,6 +161,25 @@ class TestExtensionCoexistence:
         assert any(e["type"] == "tool_call" for e in events)
 
 
+class TestEarlyAbortRestoresExtensions:
+    """Abandoning the stream mid-run restores the runner's extension list."""
+
+    async def test_extensions_restored_after_early_break(self) -> None:
+        """Breaking out of run_with_events() removes the internal bridge."""
+        ext = _EventRecorder()
+        runner = AgentRunner(
+            model=TestModel(), system_prompt="sp", extensions=[ext]
+        )
+
+        agen = runner.run_with_events("hi")
+        async for event in agen:
+            break
+        await agen.aclose()
+
+        # the finally restores the user extensions; the bridge is gone
+        assert runner._extensions == [ext]
+
+
 class TestNoToolPath:
     """run_with_events() without tools yields token + run_end only."""
 
