@@ -2,8 +2,8 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
 [![Python versions](https://img.shields.io/pypi/pyversions/py-agent-framework)](https://pypi.org/project/py-agent-framework/)
-[![License](https://img.shields.io/github/license/sjwan01/py-agent)](LICENSE)
-[![CI](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/sjwan01/py-agent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/sjwan01/py-agent-framework)](LICENSE)
+[![CI](https://github.com/sjwan01/py-agent-framework/actions/workflows/ci.yml/badge.svg)](https://github.com/sjwan01/py-agent-framework/actions/workflows/ci.yml)
 
 A stateful LLM agent framework built on [pydantic-ai](https://ai.pydantic.dev).
 It adds what Pydantic AI does not provide out of the box: **session-level
@@ -228,7 +228,7 @@ Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the
 
 This is a **personal project** and not yet ready for external contributors.
 Bug reports and feature discussions via
-[issues](https://github.com/sjwan01/py-agent/issues) are welcome. If you would
+[issues](https://github.com/sjwan01/py-agent-framework/issues) are welcome. If you would
 still like to submit a change, see [CONTRIBUTING.md](CONTRIBUTING.md) — PRs
 are required and the project's standards are enforced.
 

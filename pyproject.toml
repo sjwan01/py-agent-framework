@@ -48,8 +48,8 @@ postgres = ["psycopg[binary]>=3.3", "psycopg-pool>=3.3"]
 dev = ["ruff", "mypy", "pytest", "pytest-asyncio", "fastmcp-slim[server]>=3.4"]
 
 [project.urls]
-Homepage = "https://github.com/sjwan01/py-agent"
-Repository = "https://github.com/sjwan01/py-agent"
+Homepage = "https://github.com/sjwan01/py-agent-framework"
+Repository = "https://github.com/sjwan01/py-agent-framework"
 
 [tool.hatch.build.targets.wheel]
 packages = ["py_agent"]

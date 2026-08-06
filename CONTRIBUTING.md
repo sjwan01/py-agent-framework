@@ -20,7 +20,7 @@ The design rationale lives in [CONTEXT.md](CONTEXT.md).
 Requires **Python ≥ 3.11**.
 
 ```bash
-git clone git@github.com:sjwan01/py-agent.git
+git clone git@github.com:sjwan01/py-agent-framework.git
 cd py-agent
 make bootstrap        # creates venv/ and installs the package with dev + postgres extras
 ```
