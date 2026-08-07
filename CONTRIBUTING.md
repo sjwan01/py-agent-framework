@@ -66,6 +66,10 @@ dependencies come from the `dev` extra (`fastmcp-slim[server]`).
 2. Create a focused branch (e.g. `fix/typo-in-load-history`).
 3. Run `make check` locally — CI enforces it, so fix everything it finds.
 4. Keep one logical change per PR; write a clear commit message.
+5. Merge with **squash and merge** — every PR lands as a single commit on
+   `main`, keeping the history linear and each logical change revertible.
+   Rebase the branch onto the latest `main` before opening the PR so the
+   diff shows only your change.
 
 ## Code style
 
