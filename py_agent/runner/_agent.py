@@ -2,8 +2,9 @@
 
 Entry points: ``run(prompt)`` and ``run_stream(prompt)``. Both methods share
 the exact same lifecycle; the only difference is that ``run()`` packages the
-result into a ``RunResult``, while ``run_stream()`` yields events one by one
-to external consumers.
+result into a ``RunResult``, while ``run_stream()`` forwards runtime events:
+chunks yielded by streaming extensions reach the external consumer, and the
+stream always ends with ``run_end``.
 
 A full run lifecycle:
 
@@ -178,6 +179,10 @@ class AgentRunner:
 
         # resolve on_warning early so the single-turn config warning can use it
         self._on_warning = on_warning or _noop
+        # the thinking + streaming defect is only identifiable once the caller
+        # actually consumes run_stream(); warn there, exactly once (see
+        # run_stream())
+        self._thinking_stream_warned = False
         if toolset_failure is not None:
             _factory._validate_toolset_failure_handler(toolset_failure)
         self._toolset_failure = toolset_failure
@@ -553,13 +558,22 @@ class AgentRunner:
     async def run_stream(
         self, prompt: str, *, session_id: str | None = None
     ) -> AsyncIterator[dict[str, Any]]:
-        """Run one conversation turn and yield events one by one.
+        """Run one conversation turn, forwarding runtime events as they happen.
 
-        Differences from ``run()``:
+        Event contract:
 
-        - The Agent is built with ``streamers`` so all extensions receive runtime events.
-        - Token chunks, tool calls, and lifecycle events are yielded as they happen.
-        - The final event is still ``{"type": "run_end", ...}``.
+        - Runtime events (``TOKEN_STREAM``, tool events, lifecycle events) are
+          delivered to extensions that implement
+          ``on_agent_runner_event_stream``; the chunks those extensions yield
+          are the only runtime events this async iterator forwards. See
+          ``_internals.notify_streamers`` for how chunks are collected and
+          ``_internals.drain_pending`` for how they are forwarded.
+        - Events observed in chain mode (``on_agent_runner_event``) are never
+          forwarded to the consumer.
+        - A bare consumer — no extension implementing
+          ``on_agent_runner_event_stream`` — receives only the final
+          ``run_end`` event. To observe token/tool events, pass an extension
+          implementing ``on_agent_runner_event_stream``.
 
         Args:
             prompt: The user's message for this turn.
@@ -567,10 +581,26 @@ class AgentRunner:
                 starts a fresh session, an existing id continues it.
 
         Yields:
-            Event dicts: lifecycle events (``session_start`` … ``session_end``),
-            tool events, and token chunks, ending with ``run_end``. See
-            ``AgentRunnerEvent`` for the event names.
+            Chunks yielded by streaming extensions plus the fixed
+            ``{"type": "run_end", ...}`` final event. With no streaming
+            extension, only ``run_end`` is yielded.
         """
+        # The thinking + streaming defect is only detectable here: the caller's
+        # intent to stream is unknown at construction. An async generator's
+        # body runs on first iteration, so creating the generator without
+        # consuming it never warns; warn exactly once per runner.
+        if self._thinking_enabled and not self._thinking_stream_warned:
+            self._thinking_stream_warned = True
+            self._on_warning(
+                "run_stream() with thinking_enabled=True inherits a "
+                "pydantic-ai defect (2.22+, verified on deepseek-v4-flash): "
+                "in thinking + streaming mode the agent loop may terminate "
+                "after a tool returns, dropping the post-tool-call text, and "
+                "run_end.output is not a reliable fallback. Prefer "
+                "non-streaming run() or set thinking_enabled=False.",
+                None,
+            )
+
         # 1. setup (same as run())
         session_id, history, injected, needs_compaction, active_sp = await self._setup_run(
             prompt, session_id

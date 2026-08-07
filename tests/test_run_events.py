@@ -130,6 +130,20 @@ class TestRunStreamConsumerView:
 
         assert [event["type"] for event in events] == ["run_end"]
 
+    async def test_chain_only_extension_yields_nothing_to_consumer(
+        self, model: TestModel
+    ) -> None:
+        """Chain-mode events never reach the consumer without a stream hook."""
+        runner = AgentRunner(
+            model=model, system_prompt="sp", extensions=[_EventRecorder()]
+        )
+
+        events = [event async for event in runner.run_stream("hi")]
+
+        # the recorder observes TOKEN_STREAM via on_agent_runner_event, but
+        # chain-mode events are not forwarded; only run_end reaches the caller
+        assert [event["type"] for event in events] == ["run_end"]
+
     async def test_streaming_extension_chunks_reach_consumer(
         self, model: TestModel
     ) -> None:

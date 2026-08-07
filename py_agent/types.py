@@ -199,6 +199,15 @@ class Extension(Protocol):
     ) -> AsyncIterator[dict[str, Any]]:
         """Optional async generator for streaming extensions.
 
+        Events delivered here (``TOKEN_STREAM``, tool events, lifecycle
+        events) are the streaming channel into ``run_stream()``: each chunk
+        this generator yields is forwarded to the ``run_stream()`` consumer.
+        See ``AgentRunner.run_stream()`` for the full event contract.
+
+        Without an extension implementing this hook, no token or tool events
+        reach ``run_stream()`` callers — a bare consumer receives only the
+        final ``run_end`` event.
+
         If the extension does not override this, ``run()`` and ``run_stream()``
         ignore it.
         """
