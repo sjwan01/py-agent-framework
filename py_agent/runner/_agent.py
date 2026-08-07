@@ -1,10 +1,12 @@
 """AgentRunner — core orchestrator of the framework.
 
-Entry points: ``run(prompt)`` and ``run_stream(prompt)``. Both methods share
-the exact same lifecycle; the only difference is that ``run()`` packages the
-result into a ``RunResult``, while ``run_stream()`` forwards runtime events:
-chunks yielded by streaming extensions reach the external consumer, and the
-stream always ends with ``run_end``.
+Entry points: ``run(prompt)``, ``run_stream(prompt)``, and
+``run_with_events(prompt)``. All three methods share the exact same
+lifecycle; the only difference is how the outcome is delivered: ``run()``
+packages the result into a ``RunResult``, ``run_stream()`` forwards chunks
+yielded by streaming extensions, and ``run_with_events()`` yields a
+normalized event stream (token / tool / run_end) directly to a bare
+consumer. Streams always end with ``run_end``.
 
 A full run lifecycle:
 
@@ -61,9 +63,12 @@ class AgentRunner:
     A system prompt is always required: pass it explicitly, or omit it only
     when reconnecting to an existing session that already has a stored prompt.
 
-    Two entry points:
+    Two streaming entry points plus the non-streaming one:
     - ``run(prompt)`` — execute one turn, return ``RunResult``.
-    - ``run_stream(prompt)`` — execute one turn, yield events as they happen.
+    - ``run_stream(prompt)`` — execute one turn, yield events as they happen
+      (requires a streaming extension for token/tool events).
+    - ``run_with_events(prompt)`` — execute one turn, yield normalized
+      token / tool / run_end events directly (no extension needed).
 
     Args:
         model: Pydantic AI model used for the agent's main conversation loop.
@@ -166,7 +171,7 @@ class AgentRunner:
         self._thinking_enabled = thinking_enabled
         self._thinking_level = thinking_level
 
-        self._extensions = extensions or []
+        self._extensions = list(extensions or [])
 
         self._raw_tools = list(tools)
         self._tools: list[PydanticTool[Any]] = []
@@ -555,36 +560,35 @@ class AgentRunner:
         # should never reach here — _finalize_run always yields run_end
         raise RuntimeError("run did not produce a run_end event")  # pragma: no cover - unreachable
 
-    async def run_stream(
-        self, prompt: str, *, session_id: str | None = None
+    async def _run_stream_impl(
+        self,
+        prompt: str,
+        session_id: str | None,
+        *,
+        streamers: list[Extension],
+        pending: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
-        """Run one conversation turn, forwarding runtime events as they happen.
+        """Shared streaming body for ``run_stream()`` / ``run_with_events()``.
 
-        Event contract:
-
-        - Runtime events (``TOKEN_STREAM``, tool events, lifecycle events) are
-          delivered to extensions that implement
-          ``on_agent_runner_event_stream``; the chunks those extensions yield
-          are the only runtime events this async iterator forwards. See
-          ``_internals.notify_streamers`` for how chunks are collected and
-          ``_internals.drain_pending`` for how they are forwarded.
-        - Events observed in chain mode (``on_agent_runner_event``) are never
-          forwarded to the consumer.
-        - A bare consumer — no extension implementing
-          ``on_agent_runner_event_stream`` — receives only the final
-          ``run_end`` event. To observe token/tool events, pass an extension
-          implementing ``on_agent_runner_event_stream``.
+        Extracted from ``run_stream()`` so both public streaming entry points
+        share one implementation: setup, the pydantic-ai streaming loop, and
+        finalization. The first-iteration thinking warning lives here so both
+        entry points inherit it (both are affected by the upstream defect).
 
         Args:
             prompt: The user's message for this turn.
-            session_id: Same reconnection semantics as ``run()`` — ``None``
-                starts a fresh session, an existing id continues it.
+            session_id: Same reconnection semantics as ``run()``.
+            streamers: Streaming extensions that should receive runtime
+                events (and whose yielded chunks are forwarded).
+            pending: Staging list for streamed chunks. ``None`` creates a
+                fresh list for this run.
 
         Yields:
             Chunks yielded by streaming extensions plus the fixed
-            ``{"type": "run_end", ...}`` final event. With no streaming
-            extension, only ``run_end`` is yielded.
+            ``run_end`` event.
         """
+        pending = [] if pending is None else pending
+
         # The thinking + streaming defect is only detectable here: the caller's
         # intent to stream is unknown at construction. An async generator's
         # body runs on first iteration, so creating the generator without
@@ -592,12 +596,13 @@ class AgentRunner:
         if self._thinking_enabled and not self._thinking_stream_warned:
             self._thinking_stream_warned = True
             self._on_warning(
-                "run_stream() with thinking_enabled=True inherits a "
-                "pydantic-ai defect (2.22+, verified on deepseek-v4-flash): "
-                "in thinking + streaming mode the agent loop may terminate "
-                "after a tool returns, dropping the post-tool-call text, and "
-                "run_end.output is not a reliable fallback. Prefer "
-                "non-streaming run() or set thinking_enabled=False.",
+                "run_stream()/run_with_events() with thinking_enabled=True "
+                "inherit a pydantic-ai defect (2.22+, verified on "
+                "deepseek-v4-flash): in thinking + streaming mode the agent "
+                "loop may terminate after a tool returns, dropping the "
+                "post-tool-call text, and run_end.output is not a reliable "
+                "fallback. Prefer non-streaming run() or set "
+                "thinking_enabled=False.",
                 None,
             )
 
@@ -607,8 +612,6 @@ class AgentRunner:
         )
 
         # 2. build agent — pass streamers to enable streaming event push
-        streamers = list(self._extensions)
-        pending: list[dict[str, Any]] = []
         agent = await self._build_agent(
             session_id, active_sp=active_sp, pending=pending, streamers=streamers
         )
@@ -649,3 +652,108 @@ class AgentRunner:
             pending=pending,
         ):
             yield event
+
+    async def run_stream(
+        self, prompt: str, *, session_id: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run one conversation turn, forwarding runtime events as they happen.
+
+        Event contract:
+
+        - Runtime events (``TOKEN_STREAM``, tool events, lifecycle events) are
+          delivered to extensions that implement
+          ``on_agent_runner_event_stream``; the chunks those extensions yield
+          are the only runtime events this async iterator forwards. See
+          ``_internals.notify_streamers`` for how chunks are collected and
+          ``_internals.drain_pending`` for how they are forwarded.
+        - Events observed in chain mode (``on_agent_runner_event``) are never
+          forwarded to the consumer.
+        - A bare consumer — no extension implementing
+          ``on_agent_runner_event_stream`` — receives only the final
+          ``run_end`` event. To observe token/tool events, pass an extension
+          implementing ``on_agent_runner_event_stream``, or use
+          ``run_with_events()`` which needs no extension.
+
+        Args:
+            prompt: The user's message for this turn.
+            session_id: Same reconnection semantics as ``run()`` — ``None``
+                starts a fresh session, an existing id continues it.
+
+        Yields:
+            Chunks yielded by streaming extensions plus the fixed
+            ``{"type": "run_end", ...}`` final event. With no streaming
+            extension, only ``run_end`` is yielded.
+        """
+        async for event in self._run_stream_impl(
+            prompt, session_id, streamers=list(self._extensions)
+        ):
+            yield event
+
+    async def run_with_events(
+        self, prompt: str, *, session_id: str | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run one conversation turn, yielding normalized runtime events directly.
+
+        Unlike ``run_stream()``, this iterator needs no streaming extension: a
+        bare consumer receives token, tool, and final events, each carrying a
+        stable ``"type"`` field. The yielded event shapes:
+
+        - ``{"type": "token", "chunk": str}`` — one streamed text chunk.
+        - ``{"type": "tool_call", "tool_name": str, "tool_call_id": str, "args": dict}``
+          — the model requested a tool.
+        - ``{"type": "tool_result", "tool_name": str, "tool_call_id": str,
+          "content": Any, "is_error": bool}`` — the tool finished.
+        - ``{"type": "run_end", "session_id": str, "output": str,
+          "new_messages": list, "usage": ...}`` — the stream always ends
+          with this.
+
+        Events are snapshots taken at the interception point: ``tool_call.args``
+        and ``tool_result.content`` reflect the values the hooks dispatched,
+        before user extensions rewrite them in chain mode (rewritten values are
+        visible only through ``on_agent_runner_event`` return values).
+        ``tool_result.is_error`` is a known limitation: the hooks never set it
+        to ``True``, so consumers always see ``False``.
+
+        Ordering: ``tool_call`` / ``tool_result`` events precede the token
+        chunk of the text that follows them, and the stream always ends with
+        ``run_end``. User extensions behave exactly as under ``run_stream()``:
+        chain events still dispatch to ``on_agent_runner_event`` and an
+        internal bridge (``_internals._EventBridge``) never mutates chain data.
+        Like the other entry points, this method assumes a single in-flight
+        run per runner instance.
+
+        Known limitation: this API uses the same ``agent.run_stream()`` path,
+        so the pydantic-ai thinking + streaming + tools defect applies equally
+        — with ``thinking_enabled=True`` (the default) the post-tool-call text
+        may be lost, and ``run_end.output`` is not a reliable fallback. Prefer
+        non-streaming ``run()`` or set ``thinking_enabled=False``. A warning is
+        emitted once on the first iteration when ``thinking_enabled=True``.
+
+        Args:
+            prompt: The user's message for this turn.
+            session_id: Same reconnection semantics as ``run()`` — ``None``
+                starts a fresh session, an existing id continues it.
+
+        Yields:
+            The normalized events described above, ending with ``run_end``.
+        """
+        bridge = _internals._EventBridge()
+        streamers = [bridge, *self._extensions]
+        # Chain dispatch (`_fire`) iterates self._extensions, so the bridge
+        # must sit there too for TOOL_CALL / TOOL_RESULT (chain-only events) to
+        # reach it; it stays in the streamers list for the stream channel.
+        # Insert for the duration of this run and restore afterwards — the
+        # bridge observes, never mutates, and is invisible to user extensions.
+        self._extensions.insert(0, bridge)
+        try:
+            async for event in self._run_stream_impl(
+                prompt, session_id, streamers=streamers
+            ):
+                yield event
+        finally:
+            # Restore the extension list even on early exit. The delegate is
+            # deliberately NOT closed explicitly: aborting pydantic-ai's
+            # run_stream() mid-stream triggers an upstream generator-finalization
+            # defect (same failure as run_stream() with a streaming extension),
+            # so cleanup is left to the same GC path the other stream API uses.
+            self._extensions.remove(bridge)

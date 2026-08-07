@@ -211,7 +211,9 @@ Selected events:
 **Streaming extensions:** implement `on_agent_runner_event_stream(event, data)`
 as an async generator to receive runtime events (`TOKEN_STREAM`, tool events,
 lifecycle events) — each chunk it yields is forwarded to the `run_stream()`
-consumer. Without such an extension, `run_stream()` yields only `run_end`.
+consumer. Without such an extension, `run_stream()` yields only `run_end`;
+use `run_with_events()` (see below) to receive token/tool events with no
+extension at all.
 
 ## Public API
 
@@ -225,6 +227,26 @@ from py_agent.types import Extension, AgentRunnerEvent, MessageRole, ToolsetFail
 events: chunks yielded by streaming extensions (implementing
 `on_agent_runner_event_stream`) are forwarded as they happen, and the stream
 always ends with `run_end`. A bare consumer receives only `run_end`.
+
+`run_with_events()` is a sibling API for bare consumers: it yields normalized
+events directly, with no extension required. Each event is a dict with a
+`"type"` field:
+
+| type | payload |
+|---|---|
+| `token` | `{"type": "token", "chunk": str}` — one streamed text chunk |
+| `tool_call` | `{"type": "tool_call", "tool_name": str, "tool_call_id": str, "args": dict}` |
+| `tool_result` | `{"type": "tool_result", "tool_name": str, "tool_call_id": str, "content": Any, "is_error": bool}` |
+| `run_end` | unchanged — `{"type": "run_end", "session_id": str, "output": str, "new_messages": list, "usage": ...}` |
+
+Tool events precede the token chunk of the text that follows them, and the
+stream always ends with `run_end`. User extensions keep observing events
+under `run_with_events()` (the internal bridge never mutates chain data).
+
+Events are snapshots taken before chain-mode extension rewrites:
+`tool_call.args` and `tool_result.content` show the values the hooks
+dispatched, not the rewritten effective values. `tool_result.is_error` is
+always `False` — the hooks never set it (a known limitation).
 
 ## Known issues
 
@@ -245,9 +267,9 @@ Workarounds:
 - Set `thinking_enabled=False` when streaming output matters more than
   thinking.
 
-`AgentRunner` emits an `on_warning` on the first `run_stream()` call when
-`thinking_enabled=True` (`run()` never warns — it is not affected by the
-defect).
+`AgentRunner` emits an `on_warning` on the first `run_stream()` or
+`run_with_events()` call when `thinking_enabled=True` (`run()` never warns —
+it is not affected by the defect).
 
 ## Development
 

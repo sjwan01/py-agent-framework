@@ -475,8 +475,10 @@ asyncio_mode = auto
 Publishing is split — trial is automatic, production is manual-only:
 
 - **Trial (TestPyPI):** any push/merge to `main` runs the publish workflow
-  and uploads to TestPyPI automatically (`TEST_PYPI_API_TOKEN` secret;
-  skipped when the secret is unset). This is the dry run.
+  and uploads to TestPyPI automatically via Trusted Publishing (OIDC) — no
+  API token. `skip-existing: true` means a merge without a version bump
+  re-uploads the same version and is silently skipped (no new version, no
+  error). This is the dry run.
 - **Production (PyPI):** manual only — Actions → Publish to PyPI →
   Run workflow. Never triggered by tags or pushes.
 
