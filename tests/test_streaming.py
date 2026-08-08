@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+from pydantic_ai import Tool as PydanticTool
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -21,6 +22,12 @@ from pydantic_ai.messages import (
     TextPart,
 )
 from pydantic_ai.models import Model, ModelRequestParameters, StreamedResponse
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaToolCall,
+    DeltaToolCalls,
+    FunctionModel,
+)
 from pydantic_ai.settings import ModelSettings
 
 from py_agent.runner import AgentRunner
@@ -136,6 +143,134 @@ class TestRunMultiChunkStream:
         result = await runner.run("hi")
 
         assert result.output == "Hello world"
+
+
+class TestStreamingCompleteness:
+    """run_stream() completes when the model emits preamble + tool calls.
+
+    The upstream defect (stop-at-first-output in the streaming path) truncates
+    the run after a tool returns when the model emitted preamble text in the
+    same response as the tool calls. These tests replay that exact shape with a
+    deterministic FunctionModel: response 1 = preamble + tool call, response
+    2 = summary. Regression: the summary must survive and token events must
+    flow in preamble → tool → summary order.
+    """
+
+    async def test_run_stream_output_complete_with_preamble_and_tools(
+        self,
+    ) -> None:
+        """Preamble + tool calls in response 1, summary in response 2: full output."""
+        model = FunctionModel(stream_function=_preamble_then_summary_stream)
+        collector = _TokenCollector()
+        runner = AgentRunner(
+            model=model,
+            system_prompt="sp",
+            tools=[PydanticTool(_tool_func, name="t")],
+            extensions=[collector],
+        )
+
+        events = [event async for event in runner.run_stream("hi")]
+
+        run_end = events[-1]
+        assert run_end["type"] == "run_end"
+        # the post-tool summary survives — no truncation
+        assert run_end["output"] == "Summary: the tool ran."
+        # both the preamble and the summary flowed as TOKEN_STREAM chunks
+        assert collector.chunks == [
+            "Preamble: about to call the tool. ",
+            "Summary: the tool ran.",
+        ]
+
+    async def test_event_order_preamble_tool_summary(self) -> None:
+        """run_with_events() yields token → tool_call → tool_result → token → run_end."""
+        model = FunctionModel(stream_function=_preamble_then_summary_stream)
+        runner = AgentRunner(
+            model=model,
+            system_prompt="sp",
+            tools=[PydanticTool(_tool_func, name="t")],
+        )
+
+        events = [event async for event in runner.run_with_events("hi")]
+
+        types = [event["type"] for event in events]
+        assert types == ["token", "tool_call", "tool_result", "token", "run_end"]
+        assert events[0]["chunk"] == "Preamble: about to call the tool. "
+        assert events[3]["chunk"] == "Summary: the tool ran."
+        assert events[-1]["output"] == "Summary: the tool ran."
+
+
+class TestToolEventCompleteness:
+    """Tool events arrive complete when text follows the tool call.
+
+    B1: when the model emits text after a tool call, the consumer must still
+    receive complete ``tool_call`` / ``tool_result`` events (payload fields
+    intact, ordered between the preamble and summary text). B2: ``run_with_events()``
+    output must be the complete final summary, not a truncated preamble.
+    """
+
+    async def test_tool_events_arrive_complete_with_following_text(self) -> None:
+        """tool_call/tool_result payloads are complete and ordered after the preamble."""
+        model = FunctionModel(stream_function=_preamble_then_summary_stream)
+        runner = AgentRunner(
+            model=model,
+            system_prompt="sp",
+            tools=[PydanticTool(_tool_func, name="t")],
+        )
+
+        events = [event async for event in runner.run_with_events("hi")]
+
+        tool_call = next(e for e in events if e["type"] == "tool_call")
+        assert tool_call["tool_name"] == "t"
+        assert tool_call["tool_call_id"]
+        assert tool_call["args"] == {"x": 1}
+
+        tool_result = next(e for e in events if e["type"] == "tool_result")
+        assert tool_result["tool_name"] == "t"
+        assert tool_result["tool_call_id"] == tool_call["tool_call_id"]
+        assert tool_result["content"] == "result 1"
+        assert tool_result["is_error"] is False
+
+        types = [e["type"] for e in events]
+        # preamble token → tool_call → tool_result → summary token → run_end
+        assert types.index("tool_call") > types.index("token")
+        assert types.index("tool_call") < types.index("tool_result")
+        assert types.index("tool_result") < types.index("run_end")
+
+    async def test_run_with_events_output_complete(self) -> None:
+        """run_with_events() delta stream joins to the full text; output is the summary."""
+        model = FunctionModel(stream_function=_preamble_then_summary_stream)
+        runner = AgentRunner(
+            model=model,
+            system_prompt="sp",
+            tools=[PydanticTool(_tool_func, name="t")],
+        )
+
+        events = [event async for event in runner.run_with_events("hi")]
+
+        tokens = [e["chunk"] for e in events if e["type"] == "token"]
+        assert "".join(tokens) == (
+            "Preamble: about to call the tool. " "Summary: the tool ran."
+        )
+        assert events[-1]["type"] == "run_end"
+        assert events[-1]["output"] == "Summary: the tool ran."
+
+
+def _tool_func(x: int = 1) -> str:
+    """A plain tool returning its argument."""
+    return f"result {x}"
+
+
+async def _preamble_then_summary_stream(
+    messages: list[ModelMessage], agent_info: AgentInfo
+) -> AsyncIterator[str | DeltaToolCalls]:
+    """Stream response 1 as preamble + tool call, response 2 as summary text."""
+    if not any(isinstance(m, ModelResponse) for m in messages):
+        yield "Preamble: about to call the tool. "
+        yield {
+            0: DeltaToolCall(name="t", json_args='{"x": 1}', tool_call_id="call_1")
+        }
+    else:
+        yield "Summary: the tool ran."
 
 
 class TestRunStreamMultiChunk:

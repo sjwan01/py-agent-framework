@@ -65,7 +65,13 @@ class TestRunStreamEventSequence:
         events = [event async for event in runner.run_stream("hi")]
 
         names = [name for name, _ in recorder.events]
-        assert names == [
+        # TOKEN_STREAM fires once per text delta (TestModel streams one part
+        # per word), so compare the order of distinct events rather than counts
+        distinct: list[str] = []
+        for name in names:
+            if name not in distinct:
+                distinct.append(name)
+        assert distinct == [
             AgentRunnerEvent.SESSION_START,
             AgentRunnerEvent.CONTEXT_PREPARE,
             AgentRunnerEvent.BEFORE_AGENT_RUN,
@@ -76,6 +82,7 @@ class TestRunStreamEventSequence:
             AgentRunnerEvent.SESSION_SAVE,
             AgentRunnerEvent.SESSION_END,
         ]
+        assert AgentRunnerEvent.TOKEN_STREAM in names
         assert events[-1]["type"] == "run_end"
 
     async def test_session_id_is_consistent(self, model: TestModel) -> None:
@@ -155,8 +162,10 @@ class TestRunStreamConsumerView:
         events = [event async for event in runner.run_stream("hi")]
 
         types = [event["type"] for event in events]
-        # TestModel emits a single chunk
-        assert types.count("token") == 1
+        # TestModel streams one delta per word; joining them rebuilds the text
+        tokens = [e["chunk"] for e in events if e["type"] == "token"]
+        assert tokens
+        assert "".join(tokens) == "success (no tool calls)"
         assert types[-1] == "run_end"
 
     async def test_run_end_payload(self, model: TestModel) -> None:

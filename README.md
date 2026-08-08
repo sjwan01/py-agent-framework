@@ -248,29 +248,6 @@ Events are snapshots taken before chain-mode extension rewrites:
 dispatched, not the rewritten effective values. `tool_result.is_error` is
 always `False` — the hooks never set it (a known limitation).
 
-## Known issues
-
-### pydantic-ai drops post-tool-call text in thinking + streaming mode
-
-With `thinking_enabled=True` (the default) and `run_stream()`, pydantic-ai
-2.22+ can terminate the agent loop right after a tool returns (verified on
-`deepseek-v4-flash` on both 2.22.0 and 2.25.0): the session's messages contain
-no second model response, so the post-tool-call text is never generated.
-`run_end.output` is not a reliable fallback — it is nondeterministic
-(truncated on some runs, complete on others). Non-streaming `run()` is always
-complete and is the only reliable path when thinking is enabled and the model
-calls tools.
-
-Workarounds:
-
-- Prefer `run()` over `run_stream()` when thinking is enabled.
-- Set `thinking_enabled=False` when streaming output matters more than
-  thinking.
-
-`AgentRunner` emits an `on_warning` on the first `run_stream()` or
-`run_with_events()` call when `thinking_enabled=True` (`run()` never warns —
-it is not affected by the defect).
-
 ## Development
 
 Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for setup and the

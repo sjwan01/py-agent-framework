@@ -20,13 +20,20 @@ A full run lifecycle:
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Sequence
 from typing import Any, cast
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentRunResult
 from pydantic_ai import Tool as PydanticTool
 from pydantic_ai.capabilities import AbstractCapability
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import (
+    AgentStreamEvent,
+    ModelMessage,
+    PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.settings import ModelSettings
 from pydantic_ai.toolsets import AbstractToolset
@@ -184,10 +191,6 @@ class AgentRunner:
 
         # resolve on_warning early so the single-turn config warning can use it
         self._on_warning = on_warning or _noop
-        # the thinking + streaming defect is only identifiable once the caller
-        # actually consumes run_stream(); warn there, exactly once (see
-        # run_stream())
-        self._thinking_stream_warned = False
         if toolset_failure is not None:
             _factory._validate_toolset_failure_handler(toolset_failure)
         self._toolset_failure = toolset_failure
@@ -571,9 +574,18 @@ class AgentRunner:
         """Shared streaming body for ``run_stream()`` / ``run_with_events()``.
 
         Extracted from ``run_stream()`` so both public streaming entry points
-        share one implementation: setup, the pydantic-ai streaming loop, and
-        finalization. The first-iteration thinking warning lives here so both
-        entry points inherit it (both are affected by the upstream defect).
+        share one implementation: setup, the pydantic-ai run loop, and
+        finalization.
+
+        The agent executes via ``agent.run()`` with an ``event_stream_handler``
+        — the combination pydantic-ai recommends for "run to completion and
+        stream at the same time": model requests are streamed (token events)
+        while the graph advances non-streamingly, so tools always execute and
+        the post-tool summary text is never lost. The handler's only job is the
+        token channel (text deltas); tool and lifecycle events keep flowing
+        through the hooks layer (``_fire`` / ``_notify_streamers``). The run
+        executes as a task and its consumer-facing events are forwarded through
+        a queue, so an early consumer abort can cancel it cleanly.
 
         Args:
             prompt: The user's message for this turn.
@@ -589,23 +601,6 @@ class AgentRunner:
         """
         pending = [] if pending is None else pending
 
-        # The thinking + streaming defect is only detectable here: the caller's
-        # intent to stream is unknown at construction. An async generator's
-        # body runs on first iteration, so creating the generator without
-        # consuming it never warns; warn exactly once per runner.
-        if self._thinking_enabled and not self._thinking_stream_warned:
-            self._thinking_stream_warned = True
-            self._on_warning(
-                "run_stream()/run_with_events() with thinking_enabled=True "
-                "inherit a pydantic-ai defect (2.22+, verified on "
-                "deepseek-v4-flash): in thinking + streaming mode the agent "
-                "loop may terminate after a tool returns, dropping the "
-                "post-tool-call text, and run_end.output is not a reliable "
-                "fallback. Prefer non-streaming run() or set "
-                "thinking_enabled=False.",
-                None,
-            )
-
         # 1. setup (same as run())
         session_id, history, injected, needs_compaction, active_sp = await self._setup_run(
             prompt, session_id
@@ -616,30 +611,76 @@ class AgentRunner:
             session_id, active_sp=active_sp, pending=pending, streamers=streamers
         )
 
-        # 3. run agent — notify + drain for every token chunk.
-        # delta=True yields incremental chunks; concatenating them rebuilds the
-        # full text exactly once. (delta=False yields accumulated prefixes and
-        # would duplicate the output on join.)
-        output_parts: list[str] = []
-        async with agent.run_stream(prompt, message_history=history) as result:
-            async for text in result.stream_text(delta=True):
-                output_parts.append(text)
+        # 3. run agent — the run task streams model-request events through the
+        # handler; the handler is the token channel (collects text deltas,
+        # fires TOKEN_STREAM, drains pending into the queue). None is the
+        # end-of-stream sentinel the wrapper task pushes once agent.run()
+        # finishes (whether it succeeds or fails), so the consumer loop never
+        # blocks on an empty queue.
+        queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+        async def _event_stream_handler(
+            _ctx: Any, events: AsyncIterable[AgentStreamEvent]
+        ) -> None:
+            """Emit TOKEN_STREAM per text delta (start content + delta increments)."""
+            async for event in events:
+                if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+                    chunk = event.part.content
+                elif isinstance(
+                    event, PartDeltaEvent
+                ) and isinstance(event.delta, TextPartDelta):
+                    chunk = event.delta.content_delta
+                else:
+                    continue
+                if not chunk:
+                    continue
                 # TOKEN_STREAM event: fire for legacy extensions and
                 # notify_streamers (streaming extension yields go into pending)
                 payload = {
                     "session_id": session_id,
-                    "data": {"chunk": text},
+                    "data": {"chunk": chunk},
                 }
                 await self._fire(AgentRunnerEvent.TOKEN_STREAM, payload)
                 await self._notify_streamers(
                     streamers, AgentRunnerEvent.TOKEN_STREAM, payload, pending,
                     on_warning=self._on_warning,
                 )
-                # drain pending chunks to the external consumer
-                async for chunk in self._drain_pending(pending):
-                    yield chunk
+                # forward the consumer-facing chunks (tool events queued by
+                # the bridge, then this token chunk) in order
+                async for drained in self._drain_pending(pending):
+                    await queue.put(drained)
 
-        output = "".join(output_parts)
+        async def _run_agent() -> AgentRunResult[str]:
+            try:
+                return await agent.run(
+                    prompt,
+                    message_history=history,
+                    event_stream_handler=_event_stream_handler,
+                )
+            finally:
+                # Unblock the consumer even on failure/cancellation; the
+                # exception itself surfaces through run_task below.
+                queue.put_nowait(None)
+
+        run_task = asyncio.create_task(_run_agent())
+        try:
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                yield chunk
+        finally:
+            # Consumer exited early or an exception escaped: stop the run task.
+            # Cleanup-only — results and exceptions are discarded here and, on
+            # the normal path, re-raised through run_task.result() below.
+            if not run_task.done():
+                run_task.cancel()
+            await asyncio.gather(run_task, return_exceptions=True)
+
+        # The run completed normally. result.output is the final summary — not
+        # a delta concatenation (deltas include the preamble text).
+        result = run_task.result()
+        output = result.output
 
         # 4. finalize — yield all post-agent events (including final run_end)
         async for event in self._finalize_run(
@@ -660,8 +701,11 @@ class AgentRunner:
 
         Event contract:
 
-        - Runtime events (``TOKEN_STREAM``, tool events, lifecycle events) are
-          delivered to extensions that implement
+        - ``TOKEN_STREAM`` chunks are the incremental text deltas of the
+          streamed model requests (preamble included; the final
+          ``run_end.output`` is the complete final summary). Runtime events
+          (``TOKEN_STREAM``, tool events, lifecycle events) are delivered to
+          extensions that implement
           ``on_agent_runner_event_stream``; the chunks those extensions yield
           are the only runtime events this async iterator forwards. See
           ``_internals.notify_streamers`` for how chunks are collected and
@@ -719,15 +763,10 @@ class AgentRunner:
         ``run_end``. User extensions behave exactly as under ``run_stream()``:
         chain events still dispatch to ``on_agent_runner_event`` and an
         internal bridge (``_internals._EventBridge``) never mutates chain data.
-        Like the other entry points, this method assumes a single in-flight
-        run per runner instance.
-
-        Known limitation: this API uses the same ``agent.run_stream()`` path,
-        so the pydantic-ai thinking + streaming + tools defect applies equally
-        — with ``thinking_enabled=True`` (the default) the post-tool-call text
-        may be lost, and ``run_end.output`` is not a reliable fallback. Prefer
-        non-streaming ``run()`` or set ``thinking_enabled=False``. A warning is
-        emitted once on the first iteration when ``thinking_enabled=True``.
+        Token chunks are the incremental text deltas of the streamed model
+        requests (preamble included); the final ``run_end.output`` is the
+        complete final summary. Like the other entry points, this method
+        assumes a single in-flight run per runner instance.
 
         Args:
             prompt: The user's message for this turn.
@@ -751,9 +790,7 @@ class AgentRunner:
             ):
                 yield event
         finally:
-            # Restore the extension list even on early exit. The delegate is
-            # deliberately NOT closed explicitly: aborting pydantic-ai's
-            # run_stream() mid-stream triggers an upstream generator-finalization
-            # defect (same failure as run_stream() with a streaming extension),
-            # so cleanup is left to the same GC path the other stream API uses.
+            # Restore the extension list even on early exit. The underlying
+            # run task is cancelled inside _run_stream_impl's finally, so the
+            # bridge removal here is synchronous and always runs.
             self._extensions.remove(bridge)
