@@ -202,7 +202,9 @@ class Extension(Protocol):
         Events delivered here (``TOKEN_STREAM``, tool events, lifecycle
         events) are the streaming channel into ``run_stream()``: each chunk
         this generator yields is forwarded to the ``run_stream()`` consumer.
-        See ``AgentRunner.run_stream()`` for the full event contract.
+        ``TOKEN_STREAM`` chunks are the incremental text deltas of the
+        streamed model requests; see ``AgentRunner.run_stream()`` for the
+        full event contract.
 
         Without an extension implementing this hook, no token or tool events
         reach ``run_stream()`` callers — a bare consumer receives only the

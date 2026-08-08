@@ -2,15 +2,19 @@
 
 Verifies that a consumer with no extensions receives normalized
 ``token`` / ``tool_call`` / ``tool_result`` / ``run_end`` events in order,
-that the thinking + streaming warning is inherited from ``run_stream()``,
-that ``run_stream()`` behavior is unchanged, and that user extensions keep
+that the stream is complete when the model emits preamble + tool calls, that
+``run_stream()`` behavior is unchanged, and that user extensions keep
 observing events when the internal bridge is present.
 """
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from typing import Any
 
+import pytest
 from pydantic_ai import Tool as PydanticTool
+from pydantic_ai.models.function import FunctionModel
 from pydantic_ai.models.test import TestModel
 
 from py_agent.runner import AgentRunner
@@ -90,40 +94,6 @@ class TestBareConsumerEventStream:
         assert run_end["usage"] is not None
 
 
-class TestWarningInheritance:
-    """run_with_events() inherits the thinking + streaming warning."""
-
-    async def test_warns_once_on_first_iteration(self) -> None:
-        """The first consumed run_with_events() warns; a second call does not."""
-        warnings: list[str] = []
-
-        def _warn(msg: str, exc: Exception | None = None) -> None:
-            warnings.append(msg)
-
-        runner = AgentRunner(model=TestModel(), system_prompt="sp", on_warning=_warn)
-
-        [event async for event in runner.run_with_events("hi")]
-        assert len(warnings) == 1
-
-        [event async for event in runner.run_with_events("hi")]
-        assert len(warnings) == 1
-
-    async def test_warning_mentions_defect(self) -> None:
-        """The warning names the pydantic-ai defect and the run() workaround."""
-        warnings: list[str] = []
-
-        def _warn(msg: str, exc: Exception | None = None) -> None:
-            warnings.append(msg)
-
-        runner = AgentRunner(model=TestModel(), system_prompt="sp", on_warning=_warn)
-
-        [event async for event in runner.run_with_events("hi")]
-
-        assert len(warnings) == 1
-        assert "pydantic-ai" in warnings[0]
-        assert "run()" in warnings[0]
-
-
 class TestRunStreamUnchanged:
     """run_stream() keeps its existing contract."""
 
@@ -178,6 +148,46 @@ class TestEarlyAbortRestoresExtensions:
 
         # the finally restores the user extensions; the bridge is gone
         assert runner._extensions == [ext]
+
+
+class TestEarlyAbortCancelsRun:
+    """Early abort cancels the underlying agent run task, not just the bridge."""
+
+    async def test_early_break_cancels_run_task(self) -> None:
+        """Aclose after break unwinds the model stream (the run task is cancelled)."""
+        closed = asyncio.Event()
+
+        async def _infinite_stream(
+            messages: list[Any], agent_info: Any
+        ) -> AsyncIterator[str]:
+            """Yield chunks forever until the stream is closed."""
+            try:
+                while True:
+                    yield "chunk"
+                    await asyncio.sleep(0.01)
+            finally:
+                # reached only when the generator is closed — i.e. the run
+                # task was cancelled and unwound through the model stream
+                closed.set()
+
+        runner = AgentRunner(
+            model=FunctionModel(stream_function=_infinite_stream),
+            system_prompt="sp",
+        )
+
+        agen = runner.run_with_events("hi")
+        async for event in agen:
+            break
+        await agen.aclose()
+
+        # pydantic-ai's graph teardown detaches the model-stream closing, so
+        # it lands a tick after aclose returns; bounded wait for it
+        try:
+            await asyncio.wait_for(closed.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pytest.fail("model stream was not closed after early abort")
+
+        assert runner._extensions == []
 
 
 class TestInterceptSnapshotSemantics:
