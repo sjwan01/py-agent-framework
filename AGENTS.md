@@ -17,6 +17,32 @@ Do not add speculative features, extra abstraction layers, or optimizations that
 are not required by the spec. If a requirement is unclear, ask for clarification
 instead of building a more general solution.
 
+## Working Principles
+
+Applies to every change, not just spec-driven work. These bias toward caution
+over speed; for trivial tasks, use judgment.
+
+1. **Think before coding.** Don't assume. Don't hide confusion. Before
+   implementing: state assumptions explicitly; present multiple interpretations
+   instead of picking silently; say so when a simpler approach exists; stop and
+   ask when something is unclear. A conclusion written into docs or code before
+   it is verified is a liability — verify first, then commit to the claim.
+2. **Simplicity first.** Minimum code that solves the problem. Nothing
+   speculative: no features beyond what was asked, no abstractions for
+   single-use code, no unrequested "flexibility", no error handling for
+   impossible scenarios. If 200 lines could be 50, rewrite. Ask: "would a senior
+   engineer call this overcomplicated?"
+3. **Surgical changes.** Touch only what you must. Don't "improve" adjacent
+   code, comments, or formatting; don't refactor what isn't broken; match the
+   existing style. If you notice unrelated dead code, mention it — don't delete
+   it. Clean up only what YOUR change made orphaned (imports, variables,
+   functions). Every changed line should trace to the task.
+4. **Goal-driven execution.** Turn tasks into verifiable goals and loop until
+   verified: "fix the bug" → write a reproducing test, then make it pass;
+   "add validation" → tests for invalid inputs first; "refactor X" → tests pass
+   before and after. For multi-step tasks, state a plan with a verify step per
+   step.
+
 ## Build & Verify
 
 ```bash
