@@ -1,8 +1,24 @@
 name: CI
 
+# Triggers:
+# - push to main: verify the merged state. Branch pushes are covered by
+#   pull_request, so there are no double runs; tags are not matched by
+#   `branches: [main]`.
+# - pull_request: verify the PR head (re-runs on each push to the branch).
+# paths-ignore: docs-only changes (.md / LICENSE) skip CI entirely. The
+# .github/ directory is deliberately NOT ignored — CI changes must be
+# verified by CI.
+
 on:
-  push:          # run on every branch push (and tag pushes — harmless)
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
 
 permissions:
   contents: read
@@ -40,6 +56,17 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python-version }}
+      # Cache the venv across runs. The key is python version + dependency
+      # manifest, so dependency changes bust the cache; restore-keys reuse a
+      # stale venv for an incremental `pip install` when only the manifest
+      # drifted slightly.
+      - name: Cache venv
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: venv
+          key: venv-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            venv-${{ matrix.python-version }}-
       - name: Set up virtualenv and install package
         run: make bootstrap
       - name: Run checks (lint + typecheck + test, incl. Postgres)

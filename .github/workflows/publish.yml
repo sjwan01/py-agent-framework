@@ -1,9 +1,15 @@
 name: Publish to PyPI
 
+# Triggers:
+# - push to main: auto trial publish to TestPyPI — but only when the version
+#   changed (a merge without a version bump skips bootstrap/build/upload via
+#   the `version` step; skip-existing remains as a second guard).
+# - workflow_dispatch: manual production publish to PyPI (never automatic).
+
 on:
   push:
-    branches: [main]        # merge/push to main → auto trial publish to TestPyPI
-  workflow_dispatch:        # manual → production publish to PyPI (never automatic)
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -23,25 +29,45 @@ jobs:
         with:
           python-version: "3.12"
 
+      # A merge without a version bump (e.g. docs) produces no new version —
+      # skip everything except this check. Manual publishes always run the
+      # full flow.
+      - name: Check version changed
+        id: version
+        if: github.event_name == 'push'
+        run: |
+          PREV=$(git show HEAD^:py_agent/__init__.py | sed -n 's/.*__version__ = "\(.*\)"/\1/p')
+          CUR=$(sed -n 's/.*__version__ = "\(.*\)"/\1/p' py_agent/__init__.py)
+          echo "previous=$PREV current=$CUR"
+          if [ -n "$PREV" ] && [ "$PREV" != "$CUR" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Set up virtualenv and install package
+        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.changed == 'true'
         run: make bootstrap
 
       - name: Run checks before publishing
+        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.changed == 'true'
         run: make check
 
       - name: Build package
+        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.changed == 'true'
         run: |
           venv/bin/pip install build twine
           venv/bin/python -m build
 
       - name: Verify package metadata
+        if: github.event_name == 'workflow_dispatch' || steps.version.outputs.changed == 'true'
         run: venv/bin/twine check dist/*
 
-      # Trial publish — runs automatically on every push/merge to main.
+      # Trial publish — runs automatically on version-changing merges to main.
       # Uses Trusted Publishing (OIDC); skip-existing keeps repeat merges
       # from failing on a 409 for a version already on TestPyPI.
       - name: Publish to TestPyPI (trial, auto on main)
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && steps.version.outputs.changed == 'true'
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           repository-url: https://test.pypi.org/legacy/
